@@ -1,0 +1,13 @@
+earthengine-api
+google-api-python-client
+google-auth-oauthlib
+google-auth-httplib2
+numpy
+pandas
+python-dotenv
+tqdm
+matplotlib
+xarray
+netCDF4
+rasterio
+pyshp
