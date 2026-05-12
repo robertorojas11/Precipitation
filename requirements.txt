@@ -11,3 +11,12 @@ xarray
 netCDF4
 rasterio
 pyshp
+torch
+scikit-learn
+scikit-image
+pyyaml
+joblib
+cartopy
+scipy
+elevation
+bmi-topography

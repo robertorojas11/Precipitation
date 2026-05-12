@@ -1,22 +1,23 @@
-# Project Architecture
+# Project Architecture: Saha & Ravela (2024)
 
 ## Overview
-The **Precipitation Downscaling** project aims to downscale 25km ERA5 atmospheric states to 5km probabilistic precipitation maps for the Mesoamerican cyclone basins (Pacific and Atlantic). The core relies on the OYA Architecture (deterministic U-Net) and FGN Framework (probabilistic noise injection).
+The project implements the **Saha & Ravela (2024)** statistical-physical downscaling pipeline for the Mexico and Central America domain. It downscales 25km ERA5 atmospheric states to 5km resolution using a 2-stage ESRGAN-style RRDB network enhanced by physical priors (Upslope and Spectral models) and manifold alignment (Conditional Gaussian Process).
 
-## Directory Structure Changes
-The project structure has evolved to clearly separate extraction, preprocessing, and modeling concerns:
-- `src/data_extraction/`: Scripts for querying Google Earth Engine (`export_gee_to_drive.py`) and downloading results (`download_and_convert.py`). *(Previously named `src/data`)*
-- `src/data_preprocessing/`: Responsible for ingesting `.npz` arrays into `tf.data.Dataset` pipelines. Contains logic for normalization (`compute_norm_stats.py`) and dataset slicing (`pipeline.py`).
-- `src/models/`: Neural network definitions (OYA U-Net and FGN layer).
-- `src/utils/`: Common utilities like configuration and centralized logging.
-- `data/`: Local storage. Data extraction targets `./data/era5_oya_mesoamerica`. Contains shapefiles under `data/shape_files/`.
+## Comparative Experiment
+Two parallel pipelines are maintained for evaluation:
+- **Pipeline A (CHIRPS):** 5km target, station-blended ground truth.
+- **Pipeline B (Oya):** 5km target, AI-derived 30-min nowcasting (aggregated to daily).
 
-## Pipeline Implementation Details
+## Directory Structure
+- `src/data/`: Data extraction and ingestion (`gee_extractor.py`, `drive_manager.py`, `npz_converter.py`).
+- `src/preprocessing/`: Data normalization (`norm_calculator.py`) and physics model pre-computation (`physics_models.py`).
+- `src/models/`: Neural network definitions in PyTorch (`rrdb_gan.py`).
+- `src/training/`: Training loops and experiment management (`train_experiment.py`).
+- `data/`: Local storage for `raw`, `processed`, and `shape_files`.
+- `docs/`: Step-by-step documentation.
 
-### Step 1: Extraction
-We extract a dynamic geographical bounding box (1156 x 3796 grid at 5km resolution) constructed from `atlantico_shp_grande.shp` and `pacifico_shp_grande.shp`. These are processed into `.npz` files locally.
-
-### Step 2: Preprocessing
-The preprocessing pipeline leverages TensorFlow (`tf.data.Dataset`) to avoid memory bottlenecks on the GPU server.
-- **Normalization:** `compute_norm_stats.py` generates `norm_stats.json` for Z-scoring the 13 ERA5-Land bands.
-- **Patching & Filtering:** The full images are split into 128x128 patches. To handle severe rain/no-rain imbalances, fully dry patches are filtered out of the training stream, and wet patches receive a higher sample weight (`w_wet`), configured in `pipeline_config.yaml`.
+## Methodology Phases
+1. **Extraction:** Querying ERA5, CHIRPS, Oya, and DEM from GEE to Google Drive, then local conversion to `.npz`.
+2. **Physics & Statistics:** Pre-computing Upslope/Spectral orographic models and CGP manifold.
+3. **Modeling:** Training Stage 1 (ERA5 to ERA5-Land) and Stage 2 (Super-resolution to 5km).
+4. **Bias Correction:** Python-based GPD stochastic injection and optimal estimation.
