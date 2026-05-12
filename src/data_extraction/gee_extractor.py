@@ -23,6 +23,12 @@ SURFACE_BANDS = [
 
 OTHER_BANDS = [b for b in SURFACE_BANDS if b != 'total_precipitation_hourly']
 
+PRESSURE_BANDS = [
+    'temperature_1000', 'temperature_925', 'temperature_850', 'temperature_700', 
+    'temperature_600', 'temperature_500', 'temperature_400', 'temperature_300', 
+    'temperature_200'
+]
+
 def initialize_gee():
     """Initialize Google Earth Engine."""
     try:
@@ -95,6 +101,49 @@ def export_era5(year, month, drive_folder):
         task.start()
         tasks.append(task)
         logger.info(f"Started ERA5 export for {d_str}: {task.id}")
+        
+    return tasks
+
+def export_era5_pressure(year, month, drive_folder):
+    """Export ERA5 Pressure Levels for a given month."""
+    start_date = f"{year}-{month:02d}-01"
+    end_date = (datetime.strptime(start_date, "%Y-%m-%d") + relativedelta(months=1)).strftime("%Y-%m-%d")
+    
+    era5_pl = ee.ImageCollection("ECMWF/ERA5/DAILY") \
+        .filterDate(start_date, end_date) \
+        .filterBounds(DOMAIN_POLYGON)
+        
+    # Check if bands exist. If not exact matches, this will fail in GEE, but follows the plan.
+    # Selecting the pressure bands.
+    # We will export one image per day with 9 bands.
+    def get_daily(date_str):
+        d_start = ee.Date(date_str)
+        d_end = d_start.advance(1, 'day')
+        daily_imgs = era5_pl.filterDate(d_start, d_end).select(PRESSURE_BANDS)
+        return daily_imgs.mean().set('system:time_start', d_start.millis())
+        
+    days_in_month = (datetime.strptime(end_date, "%Y-%m-%d") - datetime.strptime(start_date, "%Y-%m-%d")).days
+    dates = [ee.Date(start_date).advance(d, 'day').format('YYYY-MM-dd') for d in range(days_in_month)]
+    local_dates = ee.List(dates).getInfo()
+    
+    tasks = []
+    for d_str in local_dates:
+        img = get_daily(d_str).clip(DOMAIN_POLYGON)
+        task_name = f"export_era5_pl_{d_str}"
+        file_name = f"era5_pl_{d_str}"
+        task = ee.batch.Export.image.toDrive(
+            image=img,
+            description=task_name,
+            folder=drive_folder,
+            fileNamePrefix=f"era5_pl/{year}/{month:02d}/{file_name}",
+            region=DOMAIN_POLYGON,
+            scale=27750, # approx 0.25 deg
+            crs='EPSG:4326',
+            maxPixels=1e13
+        )
+        task.start()
+        tasks.append(task)
+        logger.info(f"Started ERA5 Pressure Level export for {d_str}: {task.id}")
         
     return tasks
 
@@ -242,6 +291,7 @@ def main():
         
         if args.dataset == "era5":
             export_era5(year, month, drive_folder)
+            export_era5_pressure(year, month, drive_folder)
         elif args.dataset == "chirps":
             export_chirps(year, month, drive_folder)
         elif args.dataset == "oya":

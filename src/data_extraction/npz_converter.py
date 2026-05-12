@@ -27,7 +27,7 @@ def get_split(date_str):
     else:
         return "other"
 
-def process_date(date_str, target_name, era5_path, target_path, processed_dir):
+def process_date(date_str, target_name, era5_path, era5_pl_path, target_path, processed_dir):
     """Resample ERA5 and save paired NPZ."""
     split = get_split(date_str)
     out_dir = os.path.join(processed_dir, target_name, split)
@@ -69,9 +69,30 @@ def process_date(date_str, target_name, era5_path, target_path, processed_dir):
             # Change shape from (Bands, H, W) to (H, W, Bands)
             resampled_era5 = np.transpose(resampled_era5, (1, 2, 0))
             
+        with rasterio.open(era5_pl_path) as era5_pl_src:
+            era5_pl_data = era5_pl_src.read()
+            era5_pl_bands = era5_pl_src.count
+            
+            resampled_era5_pl = np.empty((era5_pl_bands, tgt_height, tgt_width), dtype=np.float32)
+            
+            reproject(
+                source=era5_pl_data,
+                destination=resampled_era5_pl,
+                src_transform=era5_pl_src.transform,
+                src_crs=era5_pl_src.crs,
+                dst_transform=tgt_transform,
+                dst_crs=tgt_crs,
+                resampling=Resampling.bilinear
+            )
+            
+            resampled_era5_pl = np.transpose(resampled_era5_pl, (1, 2, 0))
+            
+        # Stack surface and pressure level bands (H, W, 19)
+        stacked_era5 = np.concatenate([resampled_era5, resampled_era5_pl], axis=-1)
+            
         np.savez_compressed(
             out_path,
-            inputs=resampled_era5,
+            inputs=stacked_era5,
             target=target_data,
             date=date_str
         )
@@ -87,6 +108,7 @@ def run_conversion(target_name):
     logger.info(f"Starting NPZ conversion for target: {target_name}")
     
     era5_dir = os.path.join(Config.RAW_DATA_DIR, "era5")
+    era5_pl_dir = os.path.join(Config.RAW_DATA_DIR, "era5_pl")
     target_dir = os.path.join(Config.RAW_DATA_DIR, target_name)
     processed_dir = Config.PROCESSED_DATA_DIR
     metadata_dir = os.path.join(Config.LOCAL_DATA_DIR, "metadata")
@@ -104,24 +126,27 @@ def run_conversion(target_name):
         
         year, month, _ = date_str.split('-')
         era5_path = os.path.join(era5_dir, year, month, f"era5_{date_str}.tif")
+        era5_pl_path = os.path.join(era5_pl_dir, year, month, f"era5_pl_{date_str}.tif")
         
-        if not os.path.exists(era5_path):
-            logger.warning(f"ERA5 file missing for {date_str}: {era5_path}")
+        if not os.path.exists(era5_path) or not os.path.exists(era5_pl_path):
+            logger.warning(f"ERA5 or ERA5_PL file missing for {date_str}")
             records.append({
                 "date": date_str,
                 "split": get_split(date_str),
                 "era5_path": era5_path,
+                "era5_pl_path": era5_pl_path,
                 "target_path": tgt_path,
                 "valid_flag": False
             })
             continue
             
-        split, npz_path, valid = process_date(date_str, target_name, era5_path, tgt_path, processed_dir)
+        split, npz_path, valid = process_date(date_str, target_name, era5_path, era5_pl_path, tgt_path, processed_dir)
         
         records.append({
             "date": date_str,
             "split": split,
             "era5_path": era5_path,
+            "era5_pl_path": era5_pl_path,
             "target_path": tgt_path,
             "npz_path": npz_path,
             "valid_flag": valid

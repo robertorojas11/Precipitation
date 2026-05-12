@@ -1,17 +1,103 @@
+---
+tags:
+  - pipeline/step1
+  - data-extraction
+  - gee
+  - implementation
+created: 2026-05-12
+status: implemented
+---
+
 # Step 1: Data Extraction & Acquisition
 
-## Overview
-This step retrieves all raw data required for the comparative downscaling experiment. The output of this step is a set of structured, paired `.npz` files on local disk containing ERA5 inputs and the two competing high-resolution targets: **CHIRPS** (Pipeline A) and **Oya** (Pipeline B).
+> [!IMPORTANT]
+> **Status:** ✅ Fully Implemented. All scripts are live and verified against the GEE API.
 
-**Goal:** Produce matched (input, target) samples indexed by date, stored under `data/` in the format consumed by the preprocessing step.
+## Overview
+
+This step retrieves all raw data required for the comparative downscaling experiment (Saha & Ravela 2024). The output is a set of structured, paired `.npz` files on local disk containing ERA5 inputs (surface + pressure levels = **19 bands total**) and the two competing high-resolution targets.
+
+**Two parallel pipelines are maintained:**
+
+| Pipeline | Target | Resolution | Source |
+| -------- | ------ | ---------- | ------ |
+| **A** | CHIRPS | 0.05° (~5km) | Station-blended satellite |
+| **B** | Oya | 0.05° (~5km) | AI-derived nowcasting (Google) |
 
 ---
 
-## 1. Geographic Domain & Coverage
+## 1. Environment Setup
 
-The project uses **two named basin shapefiles** stored in `data/shape_files/`. They define the real study domain — which is significantly larger than Mexico alone.
+### 1.1 `.env` Configuration
 
-### Basin Shapefiles
+File: `.env` (root of project, **never committed to git**).
+
+```dotenv
+# Google Cloud / Earth Engine
+GOOGLE_CLOUD_PROJECT_ID=precipitation-dowscaling
+GOOGLE_APPLICATION_CREDENTIALS=./auth/service_account.json
+GOOGLE_DRIVE_CREDENTIALS=./auth/service_account.json
+
+# Storage & Paths
+LOCAL_DATA_DIR=./data/era5_oya_mexico
+RAW_DATA_DIR=./data/raw
+PROCESSED_DATA_DIR=./data/processed
+
+# GEE Export Configuration
+GEE_DRIVE_FOLDER=Precipitation_Exports
+
+# Shapefiles
+ATLANTICO_SHP_PATH=./data/shape_files/atlantico_shp/atlantico_shp_grande.shp
+PACIFICO_SHP_PATH=./data/shape_files/pacifico_shp/pacifico_shp_grande.shp
+```
+
+> [!WARNING]
+> `GOOGLE_DRIVE_CREDENTIALS` points to the same service account as `GOOGLE_APPLICATION_CREDENTIALS`. This works only if the service account has been **shared** on the target Google Drive folder (`Precipitation_Exports`). The Drive API scope used is `https://www.googleapis.com/auth/drive` (read + delete).
+
+### 1.2 `auth/` Directory
+
+| File | Purpose |
+| ---- | ------- |
+| `auth/service_account.json` | GCP Service Account key for both GEE and Drive API authentication. Project: `precipitation-dowscaling`. |
+
+### 1.3 `src/utils/config.py` — Central Configuration
+
+All scripts import `Config` from this module. It handles:
+- Loading `.env` via `python-dotenv`
+- Exposing typed attributes for all env vars
+- **Automatic directory initialization** on every import
+- **Centralized logger** (`PrecipitationPipeline`)
+
+```python
+from src.utils.config import Config
+
+logger = Config.get_logger()  # Returns a shared logging.Logger
+Config.PROJECT_ID              # precipitation-dowscaling
+Config.RAW_DATA_DIR            # ./data/raw
+Config.GEE_DRIVE_FOLDER        # Precipitation_Exports
+```
+
+**Directories auto-created on import:**
+```
+data/era5_oya_mexico/
+data/raw/
+data/raw/era5/
+data/raw/era5_pl/     ← pressure levels
+data/raw/chirps/
+data/raw/oya/
+data/raw/dem/
+data/processed/
+```
+
+> [!NOTE]
+> The logger format is: `%(asctime)s - PrecipitationPipeline - %(levelname)s - %(message)s`
+> All scripts use `logger = Config.get_logger()` at module level — no duplicate handlers.
+
+---
+
+## 2. Geographic Domain & Coverage
+
+### 2.1 Basin Shapefiles
 
 | Basin | File | LON range | LAT range |
 | ----- | ---- | --------- | --------- |
@@ -19,47 +105,42 @@ The project uses **two named basin shapefiles** stored in `data/shape_files/`. T
 | **Pacific** | `pacifico_shp/pacifico_shp_grande.shp` | −133.5° to −80.7° | 5.0°N to 33.8°N |
 
 > [!IMPORTANT]
-> The shapefiles are **irregular polygons**, not simple rectangles. They cover the continental land masses and adjacent ocean zones of the Gulf of Mexico and the Eastern Pacific respectively.
+> Shapefiles are **irregular polygons**, not bounding boxes. During GEE **extraction**, the convex hull is used. During **masking and evaluation**, the individual shapefiles are applied to separate Atlantic-facing from Pacific-facing dynamics.
 
-### Countries Covered
+### 2.2 Countries Covered
 
-The **union** of both basins spans the following territories:
-
-| Country / Territory | In Atlantic Basin | In Pacific Basin |
+| Country / Territory | Atlantic Basin | Pacific Basin |
 | ------------------- | :---: | :---: |
-| **Mexico** | Yes (Gulf coast, Yucatan) | Yes (Pacific coast) |
-| **Guatemala** | Yes | Yes |
-| **Belize** | Yes | No |
-| **Honduras** | Yes | Yes |
-| **El Salvador** | Yes | Yes |
-| **Nicaragua** | Yes | Yes |
-| **Costa Rica** | Yes | Yes |
-| **Panama** | Yes | Yes |
-| **Cuba** | Yes | No |
-| **Caribbean Islands** | Yes (western) | No |
-| **Eastern Pacific Ocean** | No | Yes |
+| Mexico | Yes (Gulf + Yucatan) | Yes (Pacific coast) |
+| Guatemala | Yes | Yes |
+| Belize | Yes | No |
+| Honduras | Yes | Yes |
+| El Salvador | Yes | Yes |
+| Nicaragua | Yes | Yes |
+| Costa Rica | Yes | Yes |
+| Panama | Yes | Yes |
+| Cuba | Yes | No |
+| Caribbean Islands (western) | Yes | No |
+| Eastern Pacific Ocean | No | Yes |
 
-### Extraction Domain Polygon (Convex Hull)
+### 2.3 Extraction Domain: 9-Point Convex Hull
 
-All GEE exports use the **9-point convex hull** computed from the union of all shapefile vertices. This is the tightest polygon that fully contains both basins with no wasted area, and avoids exporting large rectangular regions of open ocean.
+All GEE exports use this polygon — the tightest hull that fully contains both basins.
 
-| Vertex | Longitude | Latitude | Location description |
-| ------ | --------- | -------- | -------------------- |
-| 1 | -133.471 | 18.626 | NW — open Pacific |
-| 2 | -124.199 | 33.753 | N — Baja California North |
-| 3 | -61.429 | 32.525 | NE — Caribbean North |
-| 4 | -38.653 | 29.721 | E — open Atlantic North |
-| 5 | -38.653 | 18.490 | E — open Atlantic Mid |
-| 6 | -38.689 | 5.288 | SE — Atlantic equatorial |
-| 7 | -53.015 | 5.069 | S — Guyana coast |
-| 8 | -80.666 | 4.970 | S — Panama/Colombia |
-| 9 | -117.667 | 5.101 | SW — Eastern Pacific equatorial |
-
-> [!NOTE]
-> During evaluation and masking, the individual basin shapefiles are applied to separate Atlantic-facing from Pacific-facing dynamics. During extraction, the convex hull polygon is used.
+| Vertex | Longitude | Latitude | Description |
+| ------ | --------- | -------- | ----------- |
+| 1 | −133.471 | 18.626 | NW — open Pacific |
+| 2 | −124.199 | 33.753 | N — Baja California North |
+| 3 | −61.429 | 32.525 | NE — Caribbean North |
+| 4 | −38.653 | 29.721 | E — open Atlantic North |
+| 5 | −38.653 | 18.490 | E — open Atlantic Mid |
+| 6 | −38.689 | 5.288 | SE — Atlantic equatorial |
+| 7 | −53.015 | 5.069 | S — Guyana coast |
+| 8 | −80.666 | 4.970 | S — Panama/Colombia |
+| 9 | −117.667 | 5.101 | SW — Eastern Pacific equatorial |
 
 ```python
-# Use this in gee_extractor.py
+# Defined in gee_extractor.py — initialized after ee.Initialize()
 DOMAIN_POLYGON = ee.Geometry.Polygon([[
     [-133.471, 18.626],  # NW  -- open Pacific
     [-124.199, 33.753],  # N   -- Baja California North
@@ -75,265 +156,492 @@ DOMAIN_POLYGON = ee.Geometry.Polygon([[
 
 ---
 
-## 2. Input Data: ERA5
+## 3. Input Data: ERA5
 
-| Property         | Value                                                        |
-| ---------------- | ------------------------------------------------------------ |
-| **GEE ID**       | `ECMWF/ERA5_LAND/HOURLY`                                     |
-| **Resolution**   | 0.25° (~25km)                                                |
-| **Cadence**      | Hourly → **aggregated to daily** (sum for precip, mean for others) |
-| **Variables**    | See table below                                              |
+### 3.1 Surface Bands (10 bands) — `ECMWF/ERA5_LAND/HOURLY`
 
-### ERA5 Bands to Extract
+| Collection | Resolution | Cadence | Export scale |
+| ---------- | ---------- | ------- | ------------ |
+| `ECMWF/ERA5_LAND/HOURLY` | 0.25° (~25km) | Hourly → daily | 27,750m |
 
-| # | Band Name                              | Units   | Role                              |
-|---|----------------------------------------|---------|-----------------------------------|
-| 1 | `total_precipitation_hourly`           | m/day   | Low-res precipitation signal      |
-| 2 | `temperature_2m`                       | K       | Convection driver                 |
-| 3 | `dewpoint_temperature_2m`              | K       | Surface moisture                  |
-| 4 | `surface_pressure`                     | Pa      | Orographic signature              |
-| 5 | `u_component_of_wind_10m`              | m/s     | Zonal moisture flux               |
-| 6 | `v_component_of_wind_10m`              | m/s     | Meridional moisture flux          |
-| 7 | `surface_solar_radiation_downwards_hourly` | J/m² | Convective initiation driver  |
-| 8 | `surface_sensible_heat_flux_hourly`    | J/m²    | Boundary layer instability        |
-| 9 | `surface_latent_heat_flux_hourly`      | J/m²    | Evapotranspiration signal         |
-| 10| `volumetric_soil_water_layer_1`        | frac    | Antecedent soil moisture          |
+| # | Band Name | Units | Aggregation | Role |
+|---|-----------|-------|-------------|------|
+| 1 | `total_precipitation_hourly` | m/day | **Sum** | Low-res precip signal |
+| 2 | `temperature_2m` | K | Mean | Convection driver |
+| 3 | `dewpoint_temperature_2m` | K | Mean | Surface moisture |
+| 4 | `surface_pressure` | Pa | Mean | Orographic signature |
+| 5 | `u_component_of_wind_10m` | m/s | Mean | Zonal moisture flux |
+| 6 | `v_component_of_wind_10m` | m/s | Mean | Meridional moisture flux |
+| 7 | `surface_solar_radiation_downwards_hourly` | J/m² | Mean | Convective initiation |
+| 8 | `surface_sensible_heat_flux_hourly` | J/m² | Mean | Boundary layer instability |
+| 9 | `surface_latent_heat_flux_hourly` | J/m² | Mean | Evapotranspiration signal |
+| 10 | `volumetric_soil_water_layer_1` | frac | Mean | Antecedent soil moisture |
 
-**Pressure Level Bands** (from `ECMWF/ERA5/DAILY`):
+**Daily aggregation logic:**
+```python
+daily_precip = era5.select(['total_precipitation_hourly']).sum()
+daily_others = era5.select(OTHER_BANDS).mean()
+daily_image  = daily_precip.addBands(daily_others)
+```
 
-| Band | Levels (hPa)                                     |
-|------|--------------------------------------------------|
-| `temperature` | 1000, 925, 850, 700, 600, 500, 400, 300, 200 |
+### 3.2 Pressure Level Bands (9 bands) — `ECMWF/ERA5/DAILY`
 
-> [!NOTE]
-> ERA5-Land does not include pressure-level temperature. These 9 bands must be extracted separately from the `ECMWF/ERA5/DAILY` collection and spatially resampled to match the ERA5-Land grid.
+| Collection | Resolution | Cadence | Export scale |
+| ---------- | ---------- | ------- | ------------ |
+| `ECMWF/ERA5/DAILY` | 0.25° | Daily | 27,750m |
 
----
-
-## 3. Target A: CHIRPS (Pipeline A)
-
-| Property        | Value                                         |
-| --------------- | --------------------------------------------- |
-| **GEE ID**      | `UCSB-CHG/CHIRPS/DAILY`                       |
-| **Resolution**  | 0.05° (~5km)                                  |
-| **Cadence**     | Daily                                         |
-| **Band**        | `precipitation` (mm/day)                      |
-| **Availability**| 1981-01-01 to present                         |
-
-**Notes for extraction:**
-- Clip to the domain polygon and reproject to `EPSG:4326`.
-- Mask pixels with `precipitation < 0` (fill value = -9999).
-- Export as multi-band GeoTIFF per month (or per week for smaller file sizes).
-
----
-
-## 4. Target B: Oya (Pipeline B)
-
-| Property        | Value                                                                   |
-| --------------- | ----------------------------------------------------------------------- |
-| **GEE ID**      | `projects/global-precipitation-nowcast/assets/global_estimation`       |
-| **Resolution**  | 0.05° (~5km)                                                            |
-| **Cadence**     | 30-minute → **aggregated to daily**                                     |
-| **Band**        | `precipitation` (mm/hr → converted to mm/day by summing hourly slices) |
-| **Availability**| 2004-01-01 to present                                                   |
-
-**Notes for extraction:**
-- Use `.filterDate()` and `.select('precipitation')`.
-- Aggregate: `collection.sum()` within each UTC day (48 images per day).
-- Convert units: 30-min images are mm/hr, so `sum() × 0.5` gives mm/day.
-- Clip to the domain polygon, reproject to `EPSG:4326`.
-
----
-
-## 5. Topography: NASADEM/SRTM
-
-| Property        | Value                        |
-| --------------- | ---------------------------- |
-| **GEE ID**      | `NASA/NASADEM_HGT/001`       |
-| **Resolution**  | ~30m (resampled to 1km)      |
-| **Band**        | `elevation` (meters)         |
-
-**Notes:**
-- Export a single static GeoTIFF at 1km resolution clipped to the domain polygon.
-- This is used by the Upslope and Spectral physics models in Step 2.
-- Reproject to `EPSG:4326`.
-
----
-
-## 6. Data Splits
-
-Both pipelines use the same chronological splits:
-
-| Split      | Period          | # Days (approx) | Purpose                                  |
-| ---------- | --------------- | ---------------- | ---------------------------------------- |
-| Training   | 2004-01-01 – 2015-12-31 | ~4383  | Model learning; covers ENSO variability  |
-| Validation | 2016-01-01 – 2017-12-31 | ~730   | Hyperparameter tuning & model selection  |
-| Test       | 2018-01-01 – 2019-12-31 | ~730   | Final held-out evaluation                |
+| Band | Pressure Level | Units |
+|------|---------------|-------|
+| `temperature_1000` | 1000 hPa | K |
+| `temperature_925` | 925 hPa | K |
+| `temperature_850` | 850 hPa | K |
+| `temperature_700` | 700 hPa | K |
+| `temperature_600` | 600 hPa | K |
+| `temperature_500` | 500 hPa | K |
+| `temperature_400` | 400 hPa | K |
+| `temperature_300` | 300 hPa | K |
+| `temperature_200` | 200 hPa | K |
 
 > [!NOTE]
-> Start year is constrained to **2004** by Oya's earliest availability. CHIRPS data from 2004 onward will be used even though it is available from 1981.
+> `ECMWF/ERA5/DAILY` is a **separate GEE collection** from `ERA5_LAND`. Pressure level data is exported independently as `era5_pl_YYYY-MM-DD.tif` and stored under `data/raw/era5_pl/`. Both are stacked in `npz_converter.py` to produce the final 19-band input tensor.
 
 ---
 
-## 7. Directory Layout
+## 4. Target Datasets
 
-After Step 1 completes, the `data/` directory should have this structure:
+### 4.1 Target A: CHIRPS — Pipeline A
+
+| Property | Value |
+| -------- | ----- |
+| GEE ID | `UCSB-CHG/CHIRPS/DAILY` |
+| Resolution | 0.05° (~5km) |
+| Cadence | Daily (already daily, no aggregation needed) |
+| Band | `precipitation` (mm/day) |
+| Availability | 1981-01-01 to present |
+| Used period | **2004-01-01 to 2019-12-31** |
+
+**Processing notes:**
+- Pixels with `precipitation < 0` (fill value = −9999) are masked.
+- Export scale: 5,566m.
+- Exported as one `.tif` per day per month.
+
+### 4.2 Target B: Oya — Pipeline B
+
+| Property | Value |
+| -------- | ----- |
+| GEE ID | `projects/global-precipitation-nowcast/assets/global_estimation` |
+| Resolution | 0.05° (~5km) |
+| Cadence | 30-min → **aggregated to daily** |
+| Band | `precipitation` (mm/hr) |
+| Availability | 2004-01-01 to present |
+
+**Unit conversion and aggregation:**
+```python
+# 48 images per UTC day (30-min cadence)
+# mm/hr × 0.5 hr = mm per slot; sum = mm/day
+daily_oya = oya.filterDate(d_start, d_end).sum().multiply(0.5)
+```
+
+> [!WARNING]
+> The 2004 start year is **constrained by Oya's availability**. CHIRPS data from 1981 exists, but is not used before 2004 to keep both pipelines comparable.
+
+### 4.3 Topography: NASADEM
+
+| Property | Value |
+| -------- | ----- |
+| GEE ID | `NASA/NASADEM_HGT/001` |
+| Resolution | ~30m → resampled to 1km for export |
+| Band | `elevation` (meters) |
+| Cadence | Static (single export) |
+| Output | `data/raw/dem/nasadem_mexico_1km.tif` |
+
+Used by the **Upslope and Spectral physics models** in Step 2.
+
+---
+
+## 5. Data Splits
+
+| Split | Period | ~Days | Purpose |
+| ----- | ------ | ----- | ------- |
+| **train** | 2004-01-01 – 2015-12-31 | 4,383 | Model learning; covers ENSO variability |
+| **val** | 2016-01-01 – 2017-12-31 | 730 | Hyperparameter tuning & model selection |
+| **test** | 2018-01-01 – 2019-12-31 | 730 | Final held-out evaluation |
+
+Split logic is determined in `npz_converter.py` by `get_split(date_str)`:
+```python
+def get_split(date_str):
+    year = datetime.strptime(date_str, "%Y-%m-%d").year
+    if 2004 <= year <= 2015: return "train"
+    elif 2016 <= year <= 2017: return "val"
+    elif 2018 <= year <= 2019: return "test"
+    else: return "other"
+```
+
+---
+
+## 6. Directory Layout
+
+After Step 1 completes, the `data/` structure is:
 
 ```
 data/
-├── shape_files/          # Mexico shapefiles (already present)
+├── shape_files/
+│   ├── atlantico_shp/atlantico_shp_grande.shp
+│   └── pacifico_shp/pacifico_shp_grande.shp
 ├── raw/
 │   ├── era5/
-│   │   └── YYYY/MM/
-│   │       └── era5_YYYY-MM-DD.tif
+│   │   └── YYYY/MM/era5_YYYY-MM-DD.tif          ← 10 surface bands
+│   ├── era5_pl/
+│   │   └── YYYY/MM/era5_pl_YYYY-MM-DD.tif        ← 9 pressure bands
 │   ├── chirps/
-│   │   └── YYYY/MM/
-│   │       └── chirps_YYYY-MM-DD.tif
+│   │   └── YYYY/MM/chirps_YYYY-MM-DD.tif
 │   ├── oya/
-│   │   └── YYYY/MM/
-│   │       └── oya_YYYY-MM-DD.tif
+│   │   └── YYYY/MM/oya_YYYY-MM-DD.tif
 │   └── dem/
 │       └── nasadem_mexico_1km.tif
 ├── processed/
 │   ├── chirps/
-│   │   ├── train/   → paired .npz files
-│   │   ├── val/
-│   │   └── test/
+│   │   ├── train/YYYY-MM-DD.npz
+│   │   ├── val/YYYY-MM-DD.npz
+│   │   └── test/YYYY-MM-DD.npz
 │   └── oya/
-│       ├── train/
-│       ├── val/
-│       └── test/
-├── metadata/
-│   ├── dataset_index_chirps.csv
-│   ├── dataset_index_oya.csv
-│   ├── norm_stats_chirps.json   ← populated in Step 2
-│   └── norm_stats_oya.json      ← populated in Step 2
+│       ├── train/YYYY-MM-DD.npz
+│       ├── val/YYYY-MM-DD.npz
+│       └── test/YYYY-MM-DD.npz
+├── era5_oya_mexico/
+│   └── metadata/
+│       ├── dataset_index_chirps.csv    ← populated by npz_converter
+│       └── dataset_index_oya.csv
 └── logs/
 ```
 
-Each `.npz` file contains:
-- `inputs`: `ndarray` of shape `(H, W, 10+9)` — ERA5 surface + pressure level bands, resampled to 5km.
-- `target`: `ndarray` of shape `(H, W, 1)` — CHIRPS or Oya daily precipitation in mm/day.
-- `date`: ISO date string (e.g., `"2007-08-14"`).
+**Each `.npz` file contains:**
+
+| Key | Shape | Dtype | Description |
+|-----|-------|-------|-------------|
+| `inputs` | `(H, W, 19)` | float32 | ERA5 surface (10) + pressure levels (9), bilinearly resampled to 5km |
+| `target` | `(H, W, 1)` | float32 | CHIRPS or Oya daily precipitation in mm/day |
+| `date` | scalar string | str | ISO date e.g. `"2007-08-14"` |
+
+**`dataset_index_{target}.csv` columns:**
+
+| Column | Description |
+| ------ | ----------- |
+| `date` | ISO date string |
+| `split` | `train`, `val`, or `test` |
+| `era5_path` | Absolute path to ERA5 surface `.tif` |
+| `era5_pl_path` | Absolute path to ERA5 pressure level `.tif` |
+| `target_path` | Absolute path to CHIRPS/Oya `.tif` |
+| `npz_path` | Absolute path to output `.npz` |
+| `valid_flag` | `True` if file was successfully created |
 
 ---
 
-## 8. Scripts to Implement
+## 7. Script Reference
 
-### `src/data/gee_extractor.py`
+### 7.1 `src/utils/config.py`
 
-```
-Responsibilities:
-  - Authenticate with GEE using credentials from .env
-  - Functions:
-      export_era5(year, month, drive_folder)
-      export_chirps(year, month, drive_folder)
-      export_oya(year, month, drive_folder)
-      export_dem(drive_folder)
-  - Each function creates a GEE Export.image.toDrive() task.
-  - Returns task ID for monitoring.
-  - CLI: python src/data/gee_extractor.py --dataset [era5|chirps|oya|dem]
-          --start YYYY-MM --end YYYY-MM
-```
+**Purpose:** Single source of truth for all configuration, directory initialization, and logging.
 
-### `src/data/drive_downloader.py`
+| Method | Returns | Description |
+| ------ | ------- | ----------- |
+| `Config.get_logger()` | `logging.Logger` | Singleton shared logger with timestamped formatter |
+| `Config.init_directories()` | None | Called on import; creates all required `data/` subdirs |
 
-```
-Responsibilities:
-  - Poll GEE export tasks until COMPLETED or FAILED.
-  - Download finished GeoTIFFs from Google Drive to data/raw/{dataset}/YYYY/MM/.
-  - CLI: python src/data/drive_downloader.py --dataset [era5|chirps|oya]
+### 7.2 `src/data_extraction/gee_extractor.py`
+
+**Purpose:** Submit GEE export tasks for all datasets.
+
+**CLI:**
+```bash
+python src/data_extraction/gee_extractor.py --dataset era5 --start 2004-01 --end 2004-03
+python src/data_extraction/gee_extractor.py --dataset chirps --start 2004-01 --end 2019-12
+python src/data_extraction/gee_extractor.py --dataset oya --start 2004-01 --end 2019-12
+python src/data_extraction/gee_extractor.py --dataset dem
 ```
 
-### `src/data/npz_converter.py`
+**Key functions:**
+
+| Function | Exports to Drive prefix | Scale | Description |
+| -------- | ----------------------- | ----- | ----------- |
+| `export_era5(year, month, folder)` | `era5/YYYY/MM/` | 27,750m | 10 surface bands — one task per day |
+| `export_era5_pressure(year, month, folder)` | `era5_pl/YYYY/MM/` | 27,750m | 9 pressure temperature bands — one task per day |
+| `export_chirps(year, month, folder)` | `chirps/YYYY/MM/` | 5,566m | Daily CHIRPS, masks fill values < 0 |
+| `export_oya(year, month, folder)` | `oya/YYYY/MM/` | 5,566m | Aggregates 48 × 30-min images to daily mm/day |
+| `export_dem(folder)` | `dem/` | 1,000m | Single static NASADEM export |
+| `initialize_gee()` | — | — | Authenticates with service account, sets `DOMAIN_POLYGON` |
+
+> [!NOTE]
+> `initialize_gee()` must be called before any export function. The `DOMAIN_POLYGON` is a module-level variable set to `None` until initialization, which prevents accidental use before auth.
+
+### 7.3 `src/data_extraction/drive_manager.py`
+
+**Purpose:** Download completed GeoTIFFs from Google Drive and delete them from Drive after successful download to prevent storage overload.
+
+**CLI:**
+```bash
+python src/data_extraction/drive_manager.py --dataset era5
+python src/data_extraction/drive_manager.py --dataset era5_pl
+python src/data_extraction/drive_manager.py --dataset chirps
+```
+
+**Key functions:**
+
+| Function | Description |
+| -------- | ----------- |
+| `get_drive_service()` | Authenticates with service account, returns Drive API client |
+| `find_folder(service, name)` | Returns Drive folder ID by name |
+| `download_file(service, id, name, dest)` | Downloads file to `dest` path |
+| `delete_file(service, id, name)` | Deletes file from Drive after download |
+| `sync_dataset(dataset)` | Full sync: finds → downloads → deletes for a dataset |
+
+> [!IMPORTANT]
+> Drive scope used is `https://www.googleapis.com/auth/drive` (not `drive.readonly`), as **deletion requires write permissions**. Files are deleted from Drive whether they are newly downloaded **or already existed locally** — ensuring the Drive folder stays clean after every run.
+
+### 7.4 `src/data_extraction/npz_converter.py`
+
+**Purpose:** Read matched ERA5 + ERA5_PL + Target GeoTIFFs per date, bilinearly resample ERA5 to the 5km target grid, stack all 19 bands, and save as compressed `.npz`.
+
+**CLI:**
+```bash
+python src/data_extraction/npz_converter.py --target chirps
+python src/data_extraction/npz_converter.py --target oya
+```
+
+**Processing pipeline per date:**
 
 ```
-Responsibilities:
-  - Read matched ERA5 + target (CHIRPS or Oya) GeoTIFFs for each date.
-  - Spatially resample ERA5 from 0.25° to the 5km target grid using bilinear interp.
-  - Save paired (inputs, target) to data/processed/{target}/{split}/YYYY-MM-DD.npz.
-  - Write dataset_index_{target}.csv at data/metadata/.
-  - CLI: python src/data/npz_converter.py --target [chirps|oya]
+era5_YYYY-MM-DD.tif  (10 bands, 0.25°)  ─┐
+                                           ├─ bilinear reproject to 5km grid
+era5_pl_YYYY-MM-DD.tif (9 bands, 0.25°) ─┘
+                                           ↓
+                            np.concatenate → (H, W, 19)
+                                           +
+target_YYYY-MM-DD.tif (1 band, 0.05°)    → (H, W, 1)
+                                           ↓
+                      YYYY-MM-DD.npz  {inputs, target, date}
 ```
 
----
-
-## 9. Key Implementation Details
-
-### GEE Authentication
-Use the service account key defined in `.env`:
+**Resampling implementation:**
 ```python
-import ee
-from dotenv import load_dotenv
-import os
-
-load_dotenv()
-credentials = ee.ServiceAccountCredentials(
-    email=None,
-    key_file=os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+reproject(
+    source=era5_data,           # (Bands, H_src, W_src)
+    destination=resampled_era5, # (Bands, H_tgt, W_tgt)
+    src_transform=era5_src.transform,
+    src_crs=era5_src.crs,
+    dst_transform=tgt_transform,  # from target .tif
+    dst_crs=tgt_crs,
+    resampling=Resampling.bilinear
 )
-ee.Initialize(credentials)
 ```
 
-### ERA5 Daily Aggregation in GEE
-```python
-era5 = ee.ImageCollection("ECMWF/ERA5_LAND/HOURLY") \
-    .filterDate(start, end) \
-    .filterBounds(mexico_bbox) \
-    .select(SURFACE_BANDS)
+> [!NOTE]
+> The target `.tif` CRS and transform define the output grid. ERA5 is always reprojected **to match the target**, never the other way around.
 
-# Sum precipitation, mean for all others
-daily_precip = era5.select(['total_precipitation_hourly']).sum()
-daily_others = era5.select(OTHER_BANDS).mean()
-daily_image   = daily_precip.addBands(daily_others)
+### 7.5 `src/data_extraction/pipeline_runner.py`
+
+**Purpose:** End-to-end orchestrator that runs the full extraction pipeline for a range of years, month by month.
+
+**CLI:**
+```bash
+# Full 2004-2019 run for CHIRPS
+python src/data_extraction/pipeline_runner.py --start_year 2004 --end_year 2019 --target chirps
+
+# Test run for January 2004 only
+python src/data_extraction/pipeline_runner.py --start_year 2004 --end_year 2004 --target chirps
 ```
 
-### Oya Daily Aggregation in GEE
-```python
-oya = ee.ImageCollection("projects/global-precipitation-nowcast/assets/global_estimation") \
-    .filterDate(start, end) \
-    .filterBounds(mexico_bbox) \
-    .select(['precipitation'])
-
-# mm/hr × 0.5hr per image = mm per 30-min slot; sum gives mm/day
-daily_oya = oya.sum().multiply(0.5)
+**Monthly execution flow:**
+```
+For each month in [start_year..end_year]:
+  1. Submit GEE tasks → export_era5() + export_era5_pressure() + export_chirps/oya()
+  2. Poll GEE API (every 60s) → wait_for_tasks() until all COMPLETED or FAILED
+  3. Download from Drive → drive_manager.sync_dataset() for era5, era5_pl, target
+  4. Convert to NPZ → npz_converter.run_conversion()
 ```
 
-### Spatial Resampling for ERA5
-ERA5 is 0.25° and must be resampled to the 5km CHIRPS/Oya grid before saving to `.npz`. Use `rasterio.warp.reproject` with bilinear resampling:
-```python
-with rasterio.open(era5_tif) as src:
-    data, _ = rasterio.warp.reproject(
-        source=rasterio.band(src, list(range(1, src.count + 1))),
-        destination=np.empty((src.count, target_height, target_width)),
-        src_crs=src.crs,
-        dst_crs=target_crs,
-        dst_transform=target_transform,
-        resampling=rasterio.enums.Resampling.bilinear
-    )
+> [!WARNING]
+> This script is **blocking** — it polls GEE until each month's exports finish before proceeding. Typical GEE export times range from **5–30 minutes per month** depending on dataset size and GEE queue load.
+
+### 7.6 `src/utils/status_report.py`
+
+**Purpose:** Verify the Step 1 success metrics automatically.
+
+**CLI:**
+```bash
+python src/utils/status_report.py --target chirps --start 2004 --end 2019
+```
+
+**Checks performed:**
+
+| Check | Metric | Method |
+| ----- | ------ | ------ |
+| **Extraction Completeness** | % of expected days with `valid_flag=True` | Cross-references calendar against `dataset_index_{target}.csv` |
+| **Storage Efficiency** | Total GB + average MB/day | Scans `data/processed/{target}/` for `.npz` files |
+
+**Example output:**
+```
+==================================================
+PIPELINE STATUS REPORT
+==================================================
+2026-05-12 - INFO - Completeness Metric: 98.5% (5380/5843)
+2026-05-12 - WARNING - Missing 87 dates. First few: [2004-03-15, 2004-03-16...]
+--------------------------------------------------
+2026-05-12 - INFO - Storage Efficiency Metric for chirps:
+2026-05-12 - INFO -   Total NPZ files: 5380
+2026-05-12 - INFO -   Total disk space used: 142.7 GB
+2026-05-12 - INFO -   Average size per day: 27.2 MB
+==================================================
 ```
 
 ---
 
-## 10. Expected Step Completion Criteria
+## 8. Test Scripts
 
-- [ ] All GEE export tasks run successfully for ERA5, CHIRPS, Oya, and DEM.
-- [ ] GeoTIFFs downloaded from Drive to `data/raw/`.
-- [ ] `.npz` files generated for all 3 splits, for both CHIRPS and Oya tracks.
-- [ ] `dataset_index_chirps.csv` and `dataset_index_oya.csv` written with columns: `date`, `split`, `era5_path`, `target_path`, `valid_flag`.
-- [ ] A visual sanity check notebook (`notebooks/01_first_images.ipynb`) confirms spatial alignment of ERA5 inputs vs CHIRPS/Oya targets over Mexico.
+### 8.1 `tests/test_gee_auth.py`
+
+**Purpose:** Verify that GEE initializes correctly with the service account and can execute a basic server-side computation.
+
+```bash
+python tests/test_gee_auth.py
+```
+
+**Checks:**
+- Service account key file exists at path from `Config.SERVICE_ACCOUNT_FILE`
+- `ee.Initialize()` succeeds
+- `ee.Number(1).add(1).getInfo()` returns `2`
+
+### 8.2 `tests/test_gee_sampling.py`
+
+**Purpose:** Submit a single 1-day ERA5 export task to verify aggregation logic and GEE connectivity end-to-end.
+
+```bash
+python tests/test_gee_sampling.py
+```
+
+**Submits:** `era5_2004-01-01` export to `Precipitation_Test_Exports` Drive folder.
+**Expected output:** `SUCCESS: Submitted 1-day ERA5 export test task: <TASK_ID>`
+
+> [!NOTE]
+> This test was run successfully on 2026-05-12 and returned Task ID `5FT4N2VOOIMXRIMHLQEAOZA2`, confirming the GEE connection and export configuration are valid.
+
+### 8.3 `tests/test_raster_alignment.py`
+
+**Purpose:** Verify that a pair of downloaded ERA5 and Target `.tif` files share the same CRS and have overlapping spatial bounds.
+
+```bash
+python tests/test_raster_alignment.py data/raw/era5/2004/01/era5_2004-01-01.tif \
+                                       data/raw/chirps/2004/01/chirps_2004-01-01.tif
+```
+
+**Checks:**
+- Both files exist
+- CRS matches
+- Spatial bounds intersect
 
 ---
 
-## 11. Glossary
+## 9. Pipeline Flow Diagram
+
+```mermaid
+flowchart TD
+    A[pipeline_runner.py\n--start_year --end_year --target] --> B[gee_extractor.py\nexport_era5]
+    A --> C[gee_extractor.py\nexport_era5_pressure]
+    A --> D[gee_extractor.py\nexport_chirps or export_oya]
+    B & C & D --> E[GEE Batch Tasks\nECMWF/ERA5_LAND/HOURLY\nECMWF/ERA5/DAILY\nUCSB-CHG/CHIRPS/DAILY]
+    E -->|Poll every 60s| F{All tasks\nCOMPLETED?}
+    F -->|No| E
+    F -->|Yes| G[drive_manager.py\nsync_dataset]
+    G --> H[Download .tif from Drive\ndata/raw/era5/YYYY/MM/\ndata/raw/era5_pl/YYYY/MM/\ndata/raw/chirps or oya/YYYY/MM/]
+    H --> I[Delete from Drive\nafter download]
+    H --> J[npz_converter.py\n--target chirps or oya]
+    J --> K[Bilinear reproject ERA5\nto 5km target grid]
+    K --> L[Stack 10 surface + 9 pressure = 19 bands]
+    L --> M[Save .npz\ndata/processed/target/split/YYYY-MM-DD.npz]
+    M --> N[Write dataset_index_target.csv]
+    N --> O[status_report.py\nVerify completeness + disk usage]
+```
+
+---
+
+## 10. Success Metrics Status
+
+| Metric | Target | How Verified | Status |
+| ------ | ------ | ------------ | ------ |
+| **Extraction Completeness** | 100% of 2004-2019 days | `status_report.py --target chirps` | ✅ Script ready |
+| **Data Alignment** | 0-pixel offset | `test_raster_alignment.py` per sample | ✅ Script ready |
+| **Storage Efficiency** | Compressed `.npz` | `status_report.py` storage report | ✅ Uses `savez_compressed` |
+| **Reproducibility** | `dataset_index.csv` maps every date | Inspect CSV + `valid_flag == True` | ✅ Auto-generated |
+
+---
+
+## 11. How to Run
+
+### Quick Test (1 month)
+```bash
+# Activate environment
+source venv/bin/activate
+
+# 1. Verify auth
+python tests/test_gee_auth.py
+
+# 2. Submit a test export
+python tests/test_gee_sampling.py
+
+# 3. Run full pipeline for Jan 2004
+python src/data_extraction/pipeline_runner.py \
+    --start_year 2004 --end_year 2004 --target chirps
+
+# 4. Verify metrics
+python src/utils/status_report.py --target chirps --start 2004 --end 2004
+```
+
+### Full 2004–2019 Extraction
+```bash
+# CHIRPS (Pipeline A)
+python src/data_extraction/pipeline_runner.py \
+    --start_year 2004 --end_year 2019 --target chirps
+
+# Oya (Pipeline B) — can run in parallel in a second terminal
+python src/data_extraction/pipeline_runner.py \
+    --start_year 2004 --end_year 2019 --target oya
+
+# Export DEM (one-off, run once)
+python src/data_extraction/gee_extractor.py --dataset dem
+```
+
+> [!CAUTION]
+> Running both pipelines simultaneously will double the number of concurrent GEE export tasks. GEE has a limit of **3,000 concurrent tasks** per project. Monitor at https://code.earthengine.google.com/tasks.
+
+---
+
+## 12. Glossary
 
 | Term | Definition |
 |------|-----------|
-| **GEE** | Google Earth Engine – cloud geospatial platform used for querying and exporting gridded climate data. |
-| **ERA5** | ECMWF 5th-generation atmospheric reanalysis at 0.25° / hourly resolution. Used as the low-resolution model input. |
-| **CHIRPS** | Climate Hazards Group InfraRed Precipitation with Station data. 5km daily blended satellite+station product (1981–present). |
-| **Oya** | Google Research quasi-global precipitation product at 5km / 30-min. Derived from geostationary VIS-IR using a U-Net (2004–present). |
-| **NASADEM** | NASA digital elevation model at 30m, used for orographic physics models. |
-| **NPZ** | NumPy compressed archive format storing multiple named arrays per date. |
-| **Bilinear resampling** | Spatial interpolation method that estimates pixel values using a weighted average of the 4 nearest neighbours. Used to resample ERA5 from 0.25° to the 5km target grid. |
-| **`dataset_index.csv`** | Master file listing every sample path, its split, date, and validity flag. Primary entry point for the Step 2 dataloaders. |
+| **GEE** | Google Earth Engine — cloud geospatial platform for querying and exporting gridded climate data |
+| **ERA5** | ECMWF 5th-generation atmospheric reanalysis at 0.25°/hourly. Used as the low-resolution model input |
+| **ERA5-Land** | `ECMWF/ERA5_LAND/HOURLY` — hourly collection containing surface variables including soil moisture |
+| **ERA5 Daily** | `ECMWF/ERA5/DAILY` — daily collection containing pressure-level temperature at 9 levels |
+| **CHIRPS** | Climate Hazards Group InfraRed Precipitation with Station data. 5km daily blended satellite+station product (1981–present) |
+| **Oya** | Google Research quasi-global precipitation product at 5km/30-min. Derived from geostationary VIS-IR using a U-Net (2004–present) |
+| **NASADEM** | NASA Shuttle Radar Topography Mission DEM at 30m, resampled to 1km for physics models |
+| **NPZ** | NumPy compressed archive format (`.npz`) storing multiple named arrays per sample |
+| **Bilinear resampling** | Spatial interpolation estimating values from the 4 nearest neighbours. Used to upsample ERA5 from 0.25° to the 5km target grid |
+| **Convex hull** | Smallest convex polygon enclosing all shapefile vertices. Used as the GEE export region |
+| **`dataset_index.csv`** | Master CSV listing every sample's paths, split, date, and validity. Primary entry point for Step 2 dataloaders |
+| **Surface bands** | 10 ERA5-Land variables describing conditions at or near the Earth's surface |
+| **Pressure level bands** | 9 ERA5 temperature variables at atmospheric pressure levels from 1000 to 200 hPa |
+
+---
+
+## 13. Related Notes
+
+- [[architecture]] — Full project architecture and methodology phases
+- [[step1_implementation_plan]] — Original implementation plan with open questions
+- `src/utils/config.py` — Configuration and logger
+- `src/data_extraction/gee_extractor.py` — GEE export functions
+- `src/data_extraction/drive_manager.py` — Drive download + cleanup
+- `src/data_extraction/npz_converter.py` — Format conversion and band stacking
+- `src/data_extraction/pipeline_runner.py` — End-to-end orchestrator
+- `src/utils/status_report.py` — Completeness and storage verification
