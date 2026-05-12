@@ -5,4 +5,5 @@ __pycache__
 .env
 *.log
 notebooks/
-__init__.py
+__init__.
+auth/

@@ -9,10 +9,11 @@ Two parallel pipelines are maintained for evaluation:
 - **Pipeline B (Oya):** 5km target, AI-derived 30-min nowcasting (aggregated to daily).
 
 ## Directory Structure
-- `src/data/`: Data extraction and ingestion (`gee_extractor.py`, `drive_manager.py`, `npz_converter.py`).
-- `src/preprocessing/`: Data normalization (`norm_calculator.py`) and physics model pre-computation (`physics_models.py`).
+- `src/data_extraction/`: Data extraction and ingestion (`gee_extractor.py`, `drive_manager.py`, `npz_converter.py`).
+- `src/data_preprocessing/`: Data normalization (`norm_calculator.py`) and physics model pre-computation (`physics_models.py`).
 - `src/models/`: Neural network definitions in PyTorch (`rrdb_gan.py`).
 - `src/training/`: Training loops and experiment management (`train_experiment.py`).
+- `src/utils/`: Helper scripts and utilities for the downscaling process.
 - `data/`: Local storage for `raw`, `processed`, and `shape_files`.
 - `docs/`: Step-by-step documentation.
 
