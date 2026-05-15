@@ -44,12 +44,13 @@ def download_file(service, file_id, file_name, destination_path):
     logger.info(f"Finished downloading: {destination_path}")
     
 def delete_file(service, file_id, file_name):
-    """Delete a file from Google Drive."""
+    """Move a file to trash (Editors often can't permanently delete files they don't own)."""
     try:
-        service.files().delete(fileId=file_id).execute()
-        logger.info(f"Deleted from Drive: {file_name}")
+        service.files().update(fileId=file_id, body={'trashed': True}).execute()
+        logger.info(f"Moved to Drive trash: {file_name}")
     except Exception as e:
-        logger.error(f"Failed to delete {file_name} from Drive: {e}")
+        logger.warning(f"Could not trash {file_name} (Owner permissions required). Please empty your Precipitation_Exports folder manually later. Error: {e}")
+
 
 def sync_dataset(dataset):
     """Sync dataset files from Drive to local raw directory."""
@@ -61,44 +62,60 @@ def sync_dataset(dataset):
         logger.error(f"Main export folder '{Config.GEE_DRIVE_FOLDER}' not found in Drive.")
         return
         
-    # 2. Get files inside the dataset prefix (Since GEE exports use prefix e.g., 'era5/2004/01/era5_2004-01-01.tif')
-    # Drive API doesn't easily search by path, so we search by name prefix if possible, or list all files in the folder.
-    # Note: GEE Export with fileNamePrefix creates nested folders in Drive if they don't exist.
-    
-    # For now, a simple search for files containing the dataset name
-    query = f"name contains '{dataset}' and trashed=false"
+    # 2. Get files inside the dataset prefix
+    # We only want .tif files that match our naming convention: {dataset}_{YYYY-MM-DD}.tif
+    query = f"name contains '{dataset}' and name contains '.tif' and trashed=false"
     results = service.files().list(q=query, spaces='drive', fields='nextPageToken, files(id, name)').execute()
     items = results.get('files', [])
     
     if not items:
-        logger.info(f"No files found for dataset {dataset} in Drive.")
+        logger.info(f"No .tif files found for dataset {dataset} in Drive.")
         return
         
-    logger.info(f"Found {len(items)} files for {dataset}.")
+    logger.info(f"Found {len(items)} potential files for {dataset}.")
+    
+    warning_shown = False
     
     for item in items:
         file_id = item['id']
-        file_name = item['name']
+        full_name = item['name']
+        file_name = os.path.basename(full_name)
         
-        # Determine year and month from filename (e.g. era5_2004-01-01.tif)
         try:
-            date_str = file_name.split('_')[1].split('.')[0]
-            year, month, _ = date_str.split('-')
+            if not file_name.startswith(f"{dataset}_") or '-' not in file_name:
+                continue
+                
+            parts = file_name.replace('.tif', '').split('_')
+            if len(parts) < 2: continue
+            date_part = parts[-1] 
+            date_elements = date_part.split('-')
+            if len(date_elements) < 3: continue
             
+            year, month = date_elements[0], date_elements[1]
             dest_dir = os.path.join(Config.RAW_DATA_DIR, dataset, year, month)
             os.makedirs(dest_dir, exist_ok=True)
-            
             dest_path = os.path.join(dest_dir, file_name)
             
             if not os.path.exists(dest_path):
-                download_file(service, file_id, file_name, dest_path)
-                delete_file(service, file_id, file_name)
+                download_file(service, file_id, full_name, dest_path)
+                # Try to delete, but stay silent if it fails (known permission issue)
+                try:
+                    service.files().update(fileId=file_id, body={'trashed': True}).execute()
+                except:
+                    if not warning_shown:
+                        logger.warning(f"Note: Automatic cleanup failed due to Drive permissions. Please manually empty '{Config.GEE_DRIVE_FOLDER}' in your browser to save space.")
+                        warning_shown = True
             else:
-                logger.info(f"File already exists locally: {dest_path}")
-                # We also want to delete it from Drive if it exists locally to clear space
-                delete_file(service, file_id, file_name)
+                # File is already local, try one last time to trash it quietly
+                try:
+                    service.files().update(fileId=file_id, body={'trashed': True}).execute()
+                except:
+                    pass 
         except Exception as e:
-            logger.error(f"Skipping {file_name}: {e}")
+            logger.error(f"Error processing {file_name}: {e}")
+
+
+
 
 def main():
     parser = argparse.ArgumentParser(description="Download GEE exports from Google Drive")

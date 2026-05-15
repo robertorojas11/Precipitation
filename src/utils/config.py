@@ -23,6 +23,7 @@ class Config:
     
     # GEE Export Configuration
     GEE_DRIVE_FOLDER = os.getenv("GEE_DRIVE_FOLDER", "Precipitation_Exports")
+    GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "precipitation-dowscaling-exports")
 
     _logger = None
 

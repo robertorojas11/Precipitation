@@ -24,17 +24,29 @@ SURFACE_BANDS = [
 OTHER_BANDS = [b for b in SURFACE_BANDS if b != 'total_precipitation_hourly']
 
 PRESSURE_BANDS = [
-    'temperature_1000', 'temperature_925', 'temperature_850', 'temperature_700', 
-    'temperature_600', 'temperature_500', 'temperature_400', 'temperature_300', 
-    'temperature_200'
+    'temperature_500hPa', 'temperature_850hPa',
+    'u_component_of_wind_500hPa', 'u_component_of_wind_850hPa',
+    'v_component_of_wind_500hPa', 'v_component_of_wind_850hPa',
+    'relative_humidity_500hPa', 'relative_humidity_850hPa'
 ]
 
 def initialize_gee():
-    """Initialize Google Earth Engine."""
+    """Initialize Google Earth Engine.
+    
+    IMPORTANT: Drive exports REQUIRE user credentials (OAuth).
+    Service accounts have no Drive storage quota and will fail.
+    
+    This function tries to use user credentials first, falling back 
+    to the service account for read-only operations if needed.
+    """
+    global DOMAIN_POLYGON
+    
     try:
-        credentials = ee.ServiceAccountCredentials('', Config.SERVICE_ACCOUNT_FILE)
-        ee.Initialize(credentials, project=Config.PROJECT_ID)
-        global DOMAIN_POLYGON
+        # 1. Try User OAuth (Required for Drive exports)
+        logger.info("Initializing GEE with user OAuth credentials...")
+        ee.Initialize(project=Config.PROJECT_ID)
+        
+        # Define the domain polygon AFTER successful initialization
         DOMAIN_POLYGON = ee.Geometry.Polygon([[
             [-133.471, 18.626],  # NW  -- open Pacific
             [-124.199, 33.753],  # N   -- Baja California North
@@ -46,10 +58,40 @@ def initialize_gee():
             [-80.666,   4.970],  # S   -- Panama/Colombia
             [-117.667,  5.101],  # SW  -- Eastern Pacific equatorial
         ]])
+        
+        logger.info(f"GEE initialized with User Auth. Project: {Config.PROJECT_ID}")
         return True
-    except Exception as e:
-        logger.error(f"Error initializing GEE: {e}")
-        return False
+    except Exception as user_err:
+        logger.warning(f"User Auth failed or not found: {user_err}")
+        
+        try:
+            # 2. Fallback to Service Account (Read-only / GCS exports only)
+            logger.info("Falling back to service account credentials...")
+            credentials = ee.ServiceAccountCredentials('', Config.SERVICE_ACCOUNT_FILE)
+            ee.Initialize(credentials, project=Config.PROJECT_ID)
+            
+            # Define polygon for fallback as well
+            DOMAIN_POLYGON = ee.Geometry.Polygon([[
+                [-133.471, 18.626],
+                [-124.199, 33.753],
+                [-61.429,  32.525],
+                [-38.653,  29.721],
+                [-38.653,  18.490],
+                [-38.689,   5.288],
+                [-53.015,   5.069],
+                [-80.666,   4.970],
+                [-117.667,  5.101],
+            ]])
+            
+            logger.info(f"GEE initialized with Service Account. Project: {Config.PROJECT_ID}")
+            return True
+
+        except Exception as sa_err:
+            logger.error(f"Both User and Service Account Auth failed.")
+            logger.error(f"User error: {user_err}")
+            logger.error(f"Service account error: {sa_err}")
+            return False
+
 
 def export_era5(year, month, drive_folder):
     """Export ERA5 data for a given month."""
@@ -91,7 +133,7 @@ def export_era5(year, month, drive_folder):
         task = ee.batch.Export.image.toDrive(
             image=img,
             description=task_name,
-            folder=drive_folder,
+            folder=Config.GEE_DRIVE_FOLDER,
             fileNamePrefix=f"era5/{year}/{month:02d}/{file_name}",
             region=DOMAIN_POLYGON,
             scale=27750, # approx 0.25 deg in meters
@@ -134,7 +176,7 @@ def export_era5_pressure(year, month, drive_folder):
         task = ee.batch.Export.image.toDrive(
             image=img,
             description=task_name,
-            folder=drive_folder,
+            folder=Config.GEE_DRIVE_FOLDER,
             fileNamePrefix=f"era5_pl/{year}/{month:02d}/{file_name}",
             region=DOMAIN_POLYGON,
             scale=27750, # approx 0.25 deg
@@ -183,7 +225,7 @@ def export_chirps(year, month, drive_folder):
             task = ee.batch.Export.image.toDrive(
                 image=img,
                 description=task_name,
-                folder=drive_folder,
+                folder=Config.GEE_DRIVE_FOLDER,
                 fileNamePrefix=f"chirps/{year}/{month:02d}/{file_name}",
                 region=DOMAIN_POLYGON,
                 scale=5566, # approx 0.05 deg in meters
@@ -227,7 +269,7 @@ def export_oya(year, month, drive_folder):
         task = ee.batch.Export.image.toDrive(
             image=img,
             description=task_name,
-            folder=drive_folder,
+            folder=Config.GEE_DRIVE_FOLDER,
             fileNamePrefix=f"oya/{year}/{month:02d}/{file_name}",
             region=DOMAIN_POLYGON,
             scale=5566, # approx 0.05 deg in meters
@@ -249,7 +291,7 @@ def export_dem(drive_folder):
     task = ee.batch.Export.image.toDrive(
         image=dem,
         description=task_name,
-        folder=drive_folder,
+        folder=Config.GEE_DRIVE_FOLDER,
         fileNamePrefix=f"dem/{file_name}",
         region=DOMAIN_POLYGON,
         scale=1000, # resampled to 1km
