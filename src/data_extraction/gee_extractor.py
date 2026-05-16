@@ -1,3 +1,9 @@
+"""Google Earth Engine (GEE) data extraction for precipitation downscaling.
+
+This module provides functions to export ERA5 (surface and pressure levels),
+CHIRPS, Oya, and NASADEM datasets from GEE to Google Drive or GCS.
+"""
+
 import ee
 import os
 import argparse
@@ -5,7 +11,6 @@ import sys
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 
-# Add src to Python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from src.utils.config import Config
 
@@ -31,13 +36,13 @@ PRESSURE_BANDS = [
 ]
 
 def initialize_gee():
-    """Initialize Google Earth Engine.
-    
-    IMPORTANT: Drive exports REQUIRE user credentials (OAuth).
-    Service accounts have no Drive storage quota and will fail.
-    
-    This function tries to use user credentials first, falling back 
-    to the service account for read-only operations if needed.
+    """Initializes Google Earth Engine with the appropriate credentials.
+
+    Attempts to use user OAuth credentials first (required for Drive exports)
+    and falls back to a service account if necessary.
+
+    Returns:
+        bool: True if initialization was successful, False otherwise.
     """
     global DOMAIN_POLYGON
     
@@ -94,7 +99,16 @@ def initialize_gee():
 
 
 def export_era5(year, month, drive_folder):
-    """Export ERA5 data for a given month."""
+    """Exports ERA5 surface data for a specific year and month to Drive.
+
+    Args:
+        year (int): The year of the data to export.
+        month (int): The month of the data to export.
+        drive_folder (str): The Google Drive folder name to export to.
+
+    Returns:
+        list: A list of submitted GEE Export tasks.
+    """
     start_date = f"{year}-{month:02d}-01"
     end_date = (datetime.strptime(start_date, "%Y-%m-%d") + relativedelta(months=1)).strftime("%Y-%m-%d")
     
@@ -147,17 +161,27 @@ def export_era5(year, month, drive_folder):
     return tasks
 
 def export_era5_pressure(year, month, drive_folder):
-    """Export ERA5 Pressure Levels for a given month."""
+    """Exports ERA5 pressure level data for a specific year and month to Drive.
+
+    Uses the ECMWF/ERA5/HOURLY collection and computes daily means, as the
+    DAILY collection does not expose pressure level bands in GEE.
+
+    Args:
+        year (int): The year of the data to export.
+        month (int): The month of the data to export.
+        drive_folder (str): The Google Drive folder name to export to.
+
+    Returns:
+        list: A list of submitted GEE Export tasks.
+    """
     start_date = f"{year}-{month:02d}-01"
     end_date = (datetime.strptime(start_date, "%Y-%m-%d") + relativedelta(months=1)).strftime("%Y-%m-%d")
     
-    era5_pl = ee.ImageCollection("ECMWF/ERA5/DAILY") \
+    # ECMWF/ERA5/DAILY lacks pressure levels in GEE — use HOURLY and take daily mean.
+    era5_pl = ee.ImageCollection("ECMWF/ERA5/HOURLY") \
         .filterDate(start_date, end_date) \
         .filterBounds(DOMAIN_POLYGON)
         
-    # Check if bands exist. If not exact matches, this will fail in GEE, but follows the plan.
-    # Selecting the pressure bands.
-    # We will export one image per day with 9 bands.
     def get_daily(date_str):
         d_start = ee.Date(date_str)
         d_end = d_start.advance(1, 'day')
@@ -179,7 +203,7 @@ def export_era5_pressure(year, month, drive_folder):
             folder=Config.GEE_DRIVE_FOLDER,
             fileNamePrefix=f"era5_pl/{year}/{month:02d}/{file_name}",
             region=DOMAIN_POLYGON,
-            scale=27750, # approx 0.25 deg
+            scale=27750,  # approx 0.25 deg
             crs='EPSG:4326',
             maxPixels=1e13
         )
@@ -190,7 +214,16 @@ def export_era5_pressure(year, month, drive_folder):
     return tasks
 
 def export_chirps(year, month, drive_folder):
-    """Export CHIRPS data for a given month."""
+    """Exports CHIRPS precipitation data for a specific year and month to Drive.
+
+    Args:
+        year (int): The year of the data to export.
+        month (int): The month of the data to export.
+        drive_folder (str): The Google Drive folder name to export to.
+
+    Returns:
+        list: A list of submitted GEE Export tasks.
+    """
     start_date = f"{year}-{month:02d}-01"
     end_date = (datetime.strptime(start_date, "%Y-%m-%d") + relativedelta(months=1)).strftime("%Y-%m-%d")
     
@@ -239,7 +272,16 @@ def export_chirps(year, month, drive_folder):
     return tasks
 
 def export_oya(year, month, drive_folder):
-    """Export Oya data for a given month."""
+    """Exports Oya precipitation data for a specific year and month to Drive.
+
+    Args:
+        year (int): The year of the data to export.
+        month (int): The month of the data to export.
+        drive_folder (str): The Google Drive folder name to export to.
+
+    Returns:
+        list: A list of submitted GEE Export tasks.
+    """
     start_date = f"{year}-{month:02d}-01"
     end_date = (datetime.strptime(start_date, "%Y-%m-%d") + relativedelta(months=1)).strftime("%Y-%m-%d")
     
@@ -283,7 +325,14 @@ def export_oya(year, month, drive_folder):
     return tasks
 
 def export_dem(drive_folder):
-    """Export NASADEM data."""
+    """Exports NASADEM elevation data to Drive.
+
+    Args:
+        drive_folder (str): The Google Drive folder name to export to.
+
+    Returns:
+        list: A list containing the single submitted GEE Export task.
+    """
     dem = ee.Image("NASA/NASADEM_HGT/001").select('elevation').clip(DOMAIN_POLYGON)
     
     task_name = "export_nasadem"
@@ -304,7 +353,7 @@ def export_dem(drive_folder):
 
 def main():
     parser = argparse.ArgumentParser(description="GEE Extractor for Precipitation Downscaling")
-    parser.add_argument("--dataset", type=str, choices=["era5", "chirps", "oya", "dem"], required=True)
+    parser.add_argument("--dataset", type=str, choices=["era5", "era5_pl", "chirps", "oya", "dem"], required=True)
     parser.add_argument("--start", type=str, help="Start month YYYY-MM")
     parser.add_argument("--end", type=str, help="End month YYYY-MM")
     
@@ -333,6 +382,8 @@ def main():
         
         if args.dataset == "era5":
             export_era5(year, month, drive_folder)
+            export_era5_pressure(year, month, drive_folder)
+        elif args.dataset == "era5_pl":
             export_era5_pressure(year, month, drive_folder)
         elif args.dataset == "chirps":
             export_chirps(year, month, drive_folder)

@@ -1,3 +1,9 @@
+"""Orchestrator for the end-to-end data extraction pipeline.
+
+This module coordinates GEE exports, Drive synchronization, and NPZ conversion.
+It processes data month-by-month to stay within GEE concurrent task limits.
+"""
+
 import os
 import sys
 import time
@@ -7,7 +13,6 @@ from datetime import datetime
 from dateutil.relativedelta import relativedelta
 import ee
 
-# Add src to Python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from src.utils.config import Config
 from src.data_extraction import gee_extractor
@@ -15,20 +20,32 @@ from src.data_extraction import drive_manager
 from src.data_extraction import npz_converter
 
 logger = Config.get_logger()
-
-# Max tasks to submit at once before waiting for completion.
-# 93 tasks/month across 3 datasets stays well under the 3,000 GEE concurrent limit.
 TASK_BATCH_SIZE = 50
 
 def _local_tif_exists(dataset, date_str):
-    """Check if a raw .tif is already downloaded locally."""
+    """Checks if a raw GeoTIFF already exists on local storage.
+
+    Args:
+        dataset (str): Name of the dataset (e.g., 'era5').
+        date_str (str): ISO date string (YYYY-MM-DD).
+
+    Returns:
+        bool: True if the file exists, False otherwise.
+    """
     year, month, _ = date_str.split('-')
     tif_name = f"{dataset}_{date_str}.tif"
     local_path = os.path.join(Config.RAW_DATA_DIR, dataset, year, month, tif_name)
     return os.path.exists(local_path)
 
 def submit_in_batches(task_fns):
-    """Submit GEE export tasks in batches to avoid hitting concurrent task limits."""
+    """Submits GEE export tasks in batches and waits for their completion.
+
+    Args:
+        task_fns (list): A list of functions that, when called, submit a GEE task.
+
+    Returns:
+        list: All submitted tasks.
+    """
     all_tasks = []
     batch = []
 
@@ -49,7 +66,15 @@ def submit_in_batches(task_fns):
     return all_tasks
 
 def wait_for_tasks(tasks, poll_interval=60):
-    """Poll GEE until all tasks in the list have a terminal state."""
+    """Polls GEE until all provided tasks reach a terminal state.
+
+    Args:
+        tasks (list): A list of ee.batch.Task objects.
+        poll_interval (int): Seconds to wait between status checks.
+
+    Returns:
+        bool: True when all tasks have finished.
+    """
     if not tasks:
         return True
 
@@ -75,10 +100,15 @@ def wait_for_tasks(tasks, poll_interval=60):
     return True
 
 def run_month(year, month, target):
-    """Run full pipeline for a single month: export → wait → download → convert."""
+    """Runs the full pipeline (export -> download -> convert) for a single month.
+
+    Args:
+        year (int): The year to process.
+        month (int): The month to process.
+        target (str): The target dataset name (e.g., 'chirps').
+    """
     logger.info(f"\n{'='*50}\nProcessing {year}-{month:02d} | target={target}\n{'='*50}")
 
-    # --- Step 1: Build per-day export callables (skip if already local) ---
     days_start = datetime(year, month, 1)
     days_end = days_start + relativedelta(months=1)
     days_count = (days_end - days_start).days
@@ -89,7 +119,6 @@ def run_month(year, month, target):
     for d in range(days_count):
         d_str = (days_start + relativedelta(days=d)).strftime("%Y-%m-%d")
 
-        # ERA5 surface
         if not _local_tif_exists("era5", d_str):
             era5_fns.append(lambda y=year, m=month, d=d_str: [
                 t for t in [_submit_era5_day(y, m, d)]
@@ -97,13 +126,11 @@ def run_month(year, month, target):
         else:
             skipped += 1
 
-        # ERA5 pressure levels
         if not _local_tif_exists("era5_pl", d_str):
             era5_pl_fns.append(lambda y=year, m=month, d=d_str: [
                 t for t in [_submit_era5_pl_day(y, m, d)]
             ])
 
-        # Target dataset
         if not _local_tif_exists(target, d_str):
             target_fns.append(lambda y=year, m=month, d=d_str, tgt=target: [
                 t for t in [_submit_target_day(y, m, d, tgt)]
@@ -111,34 +138,38 @@ def run_month(year, month, target):
 
     logger.info(f"Days in month: {days_count} | Skipped (already local): {skipped}")
 
-    # --- Step 2: Submit sequentially per dataset to keep usage low ---
-    # ERA5 surface first
     if era5_fns:
         logger.info("-- Submitting ERA5 surface exports to Drive --")
         submit_in_batches(era5_fns)
         logger.info("-- Downloading ERA5 surface from Drive --")
         drive_manager.sync_dataset("era5")
 
-    # ERA5 pressure levels
     if era5_pl_fns:
         logger.info("-- Submitting ERA5 pressure level exports to Drive --")
         submit_in_batches(era5_pl_fns)
         logger.info("-- Downloading ERA5 pressure levels from Drive --")
         drive_manager.sync_dataset("era5_pl")
 
-    # Target dataset
     if target_fns:
         logger.info(f"-- Submitting {target.upper()} exports to Drive --")
         submit_in_batches(target_fns)
         logger.info(f"-- Downloading {target.upper()} from Drive --")
         drive_manager.sync_dataset(target)
 
-    # --- Step 3: Convert to NPZ ---
     logger.info("-- Converting downloaded TIFFs to NPZ --")
     npz_converter.run_conversion(target)
 
 def _submit_era5_day(year, month, date_str):
-    """Submit a single ERA5 surface day export to Drive and return the task."""
+    """Submits a GEE export task for a single day of ERA5 surface data.
+
+    Args:
+        year (int): Year of the data.
+        month (int): Month of the data.
+        date_str (str): ISO date string (YYYY-MM-DD).
+
+    Returns:
+        ee.batch.Task: The submitted GEE task.
+    """
     d_start = ee.Date(date_str)
     d_end = d_start.advance(1, 'day')
     era5 = (ee.ImageCollection("ECMWF/ERA5_LAND/HOURLY")
@@ -161,10 +192,18 @@ def _submit_era5_day(year, month, date_str):
     return task
 
 def _submit_era5_pl_day(year, month, date_str):
-    """Submit a single ERA5 pressure level day export to Drive and return the task."""
+    """Submits a GEE export task for a single day of ERA5 pressure level data.
+
+    Args:
+        year (int): Year of the data.
+        month (int): Month of the data.
+        date_str (str): ISO date string (YYYY-MM-DD).
+
+    Returns:
+        ee.batch.Task: The submitted GEE task.
+    """
     d_start = ee.Date(date_str)
     d_end = d_start.advance(1, 'day')
-    # Using HOURLY collection as DAILY lacks pressure levels in GEE
     era5_pl = (ee.ImageCollection("ECMWF/ERA5/HOURLY")
                .filterDate(d_start, d_end)
                .filterBounds(gee_extractor.DOMAIN_POLYGON)
@@ -184,7 +223,17 @@ def _submit_era5_pl_day(year, month, date_str):
 
 
 def _submit_target_day(year, month, date_str, target):
-    """Submit a single CHIRPS or Oya day export to Drive and return the task."""
+    """Submits a GEE export task for a single day of the target dataset.
+
+    Args:
+        year (int): Year of the data.
+        month (int): Month of the data.
+        date_str (str): ISO date string (YYYY-MM-DD).
+        target (str): Name of the target dataset ('chirps' or 'oya').
+
+    Returns:
+        ee.batch.Task or None: The submitted GEE task or None if no data.
+    """
     d_start = ee.Date(date_str)
     d_end = d_start.advance(1, 'day')
 
@@ -198,7 +247,7 @@ def _submit_target_day(year, month, date_str, target):
             logger.warning(f"No CHIRPS image for {date_str}")
             return None
         img = ee.Image(img_list.get(0)).clip(gee_extractor.DOMAIN_POLYGON)
-    else:  # oya
+    else:
         col = (ee.ImageCollection("projects/global-precipitation-nowcast/assets/global_estimation")
                .filterDate(d_start, d_end)
                .filterBounds(gee_extractor.DOMAIN_POLYGON)
@@ -218,7 +267,13 @@ def _submit_target_day(year, month, date_str, target):
     return task
 
 def run_batch(start_year, end_year, target="chirps"):
-    """Run the full pipeline month-by-month for a year range."""
+    """Orchestrates the pipeline month-by-month for a specified year range.
+
+    Args:
+        start_year (int): The starting year of the range.
+        end_year (int): The ending year of the range.
+        target (str): Name of the target dataset ('chirps' or 'oya').
+    """
     if not gee_extractor.initialize_gee():
         sys.exit(1)
 

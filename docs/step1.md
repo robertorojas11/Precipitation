@@ -189,21 +189,21 @@ daily_image  = daily_precip.addBands(daily_others)
 
 | Collection | Resolution | Cadence | Export scale |
 | ---------- | ---------- | ------- | ------------ |
-| `ECMWF/ERA5/HOURLY` | 0.25° | Hourly → daily mean | 27,750m |
+| `ECMWF/ERA5/HOURLY` | 0.25° | Hourly -> daily mean | 27,750m |
 
 > [!WARNING]
-> The `ECMWF/ERA5/DAILY` collection **does not include pressure levels in GEE**. The implementation correctly uses `ECMWF/ERA5/HOURLY` and takes a daily `.mean()`. The table below reflects the **actual 8 bands** verified in the downloaded files (not 9 as originally planned).
+> The `ECMWF/ERA5/DAILY` collection **does not include pressure levels in GEE**. Both `gee_extractor.py` and `pipeline_runner.py` correctly use `ECMWF/ERA5/HOURLY` and take a daily `.mean()`. The 8 bands below are the actual bands verified in the downloaded files.
 
 | # | Band | Pressure Level | Units |
 |---|------|---------------|-------|
-| 1 | `temperature_1000` | 1000 hPa | K |
-| 2 | `temperature_925` | 925 hPa | K |
-| 3 | `temperature_850` | 850 hPa | K |
-| 4 | `temperature_700` | 700 hPa | K |
-| 5 | `temperature_500` | 500 hPa | K |
-| 6 | `temperature_300` | 300 hPa | K |
-| 7 | `u_component_of_wind_500` | 500 hPa | m/s |
-| 8 | `v_component_of_wind_500` | 500 hPa | m/s |
+| 1 | `temperature_500hPa` | 500 hPa | K |
+| 2 | `temperature_850hPa` | 850 hPa | K |
+| 3 | `u_component_of_wind_500hPa` | 500 hPa | m/s |
+| 4 | `u_component_of_wind_850hPa` | 850 hPa | m/s |
+| 5 | `v_component_of_wind_500hPa` | 500 hPa | m/s |
+| 6 | `v_component_of_wind_850hPa` | 850 hPa | m/s |
+| 7 | `relative_humidity_500hPa` | 500 hPa | % |
+| 8 | `relative_humidity_850hPa` | 850 hPa | % |
 
 > [!NOTE]
 > Pressure level data is exported independently as `era5_pl_YYYY-MM-DD.tif` and stored under `data/raw/era5_pl/`. It is stacked with ERA5 surface data in `npz_converter.py` to produce the final **18-band** input tensor (10 surface + 8 pressure levels).
@@ -368,14 +368,32 @@ python src/data_extraction/gee_extractor.py --dataset dem
 | Function | Exports to Drive prefix | Scale | Description |
 | -------- | ----------------------- | ----- | ----------- |
 | `export_era5(year, month, folder)` | `era5/YYYY/MM/` | 27,750m | 10 surface bands — one task per day |
-| `export_era5_pressure(year, month, folder)` | `era5_pl/YYYY/MM/` | 27,750m | 9 pressure temperature bands — one task per day |
+| `export_era5_pressure(year, month, folder)` | `era5_pl/YYYY/MM/` | 27,750m | 8 pressure level bands (temp + wind + humidity at 500/850 hPa) — one task per day |
 | `export_chirps(year, month, folder)` | `chirps/YYYY/MM/` | 5,566m | Daily CHIRPS, masks fill values < 0 |
-| `export_oya(year, month, folder)` | `oya/YYYY/MM/` | 5,566m | Aggregates 48 × 30-min images to daily mm/day |
+| `export_oya(year, month, folder)` | `oya/YYYY/MM/` | 5,566m | Aggregates 48 x 30-min images to daily mm/day |
 | `export_dem(folder)` | `dem/` | 1,000m | Single static NASADEM export |
-| `initialize_gee()` | — | — | Authenticates with service account, sets `DOMAIN_POLYGON` |
+| `initialize_gee()` | -- | -- | Authenticates with user OAuth (Drive exports) or service account fallback, sets `DOMAIN_POLYGON` |
+
+**CLI:**
+```bash
+# Export ERA5 surface + pressure levels together
+python src/data_extraction/gee_extractor.py --dataset era5 --start 2004-01 --end 2004-03
+
+# Export pressure levels only (independent run)
+python src/data_extraction/gee_extractor.py --dataset era5_pl --start 2004-01 --end 2004-03
+
+# Export CHIRPS
+python src/data_extraction/gee_extractor.py --dataset chirps --start 2004-01 --end 2019-12
+
+# Export Oya
+python src/data_extraction/gee_extractor.py --dataset oya --start 2004-01 --end 2019-12
+
+# Export DEM (one-off)
+python src/data_extraction/gee_extractor.py --dataset dem
+```
 
 > [!NOTE]
-> `initialize_gee()` must be called before any export function. The `DOMAIN_POLYGON` is a module-level variable set to `None` until initialization, which prevents accidental use before auth.
+> `initialize_gee()` must be called before any export function. The `DOMAIN_POLYGON` is a module-level variable set to `None` until initialization, which prevents accidental use before auth. Drive exports require **user OAuth credentials** (`ee.Initialize()` without a service account). The service account fallback is for read-only / GCS-based operations only.
 
 ### 7.3 `src/data_extraction/drive_manager.py`
 
@@ -413,7 +431,7 @@ python src/data_extraction/drive_manager.py --dataset chirps
 
 ### 7.4 `src/data_extraction/npz_converter.py`
 
-**Purpose:** Read matched ERA5 + ERA5_PL + Target GeoTIFFs per date, bilinearly resample ERA5 to the 5km target grid, stack all 19 bands, and save as compressed `.npz`.
+**Purpose:** Read matched ERA5 + ERA5_PL + Target GeoTIFFs per date, bilinearly resample ERA5 to the 5km target grid, stack all 18 bands, and save as compressed `.npz`.
 
 **CLI:**
 ```bash
@@ -476,7 +494,28 @@ For each month in [start_year..end_year]:
 > [!WARNING]
 > This script is **blocking** — it polls GEE until each month's exports finish before proceeding. Typical GEE export times range from **5–30 minutes per month** depending on dataset size and GEE queue load.
 
-### 7.6 `src/utils/status_report.py`
+### 7.6 `src/data_extraction/gcs_manager.py`
+
+**Purpose:** Alternative download backend that syncs GeoTIFFs from Google Cloud Storage (GCS) instead of Google Drive. Used when GEE exports are directed to a GCS bucket rather than Drive.
+
+**CLI:**
+```bash
+python src/data_extraction/gcs_manager.py --dataset era5
+python src/data_extraction/gcs_manager.py --dataset era5_pl
+python src/data_extraction/gcs_manager.py --dataset chirps
+```
+
+**Key functions:**
+
+| Function | Description |
+| -------- | ----------- |
+| `get_gcs_client()` | Authenticates with service account, returns a GCS storage client |
+| `sync_dataset(dataset)` | Downloads all blobs matching `{dataset}/` prefix from the configured GCS bucket, saves to local `data/raw/`, then deletes the blob from GCS |
+
+> [!NOTE]
+> `gcs_manager.py` reads `Config.GCS_BUCKET_NAME` from `.env`. This module is not used by the default `pipeline_runner.py` (which uses Drive), but is available for GCS-based workflows.
+
+### 7.7 `src/utils/status_report.py`
 
 **Purpose:** Verify the Step 1 success metrics automatically.
 
@@ -565,7 +604,7 @@ flowchart TD
     E -->|Poll every 60s| F{All tasks\nCOMPLETED?}
     F -->|No| E
     F -->|Yes| G[drive_manager.py\nsync_dataset]
-    G --> G1{Skip era5_pl_*\nif dataset==era5}
+    G --> G1{Skip era5_pl_star\nif dataset==era5}
     G1 --> H[Download .tif from Drive\ndata/raw/era5/YYYY/MM/\ndata/raw/era5_pl/YYYY/MM/\ndata/raw/chirps or oya/YYYY/MM/]
     H --> I[Delete from Drive\nafter download]
     H --> J[npz_converter.py\n--target chirps or oya]
@@ -587,11 +626,11 @@ flowchart TD
 
 | Dataset | Years Available | Files | Notes |
 | ------- | --------------- | ----- | ----- |
-| **CHIRPS** | 2004–2013 | 3,653 `.tif` | Target precipitation |
-| **ERA5 surface** | 2004–2013 | 3,653 `.tif` | 10 bands each |
-| **ERA5 pressure levels** | 2004–2013 | 3,653 `.tif` | 8 bands each |
-| **DEM** | — | 0 | ⚠️ Not yet extracted |
-| **OYA** | — | 0 | Not yet extracted |
+| **CHIRPS** | 2004-2013 | 3,653 `.tif` | Target precipitation |
+| **ERA5 surface** | 2004-2013 | 3,653 `.tif` | 10 bands each |
+| **ERA5 pressure levels** | 2004-2013 | 3,653 `.tif` | 8 bands each |
+| **DEM** | -- | 0 | Not yet extracted |
+| **OYA** | -- | 0 | Not yet extracted |
 
 ### Verified Quality Metrics (2026-05-16)
 
@@ -671,29 +710,30 @@ python src/data_extraction/gee_extractor.py --dataset dem
 
 | Term | Definition |
 |------|-----------|
-| **GEE** | Google Earth Engine — cloud geospatial platform for querying and exporting gridded climate data |
+| **GEE** | Google Earth Engine -- cloud geospatial platform for querying and exporting gridded climate data |
 | **ERA5** | ECMWF 5th-generation atmospheric reanalysis at 0.25°/hourly. Used as the low-resolution model input |
-| **ERA5-Land** | `ECMWF/ERA5_LAND/HOURLY` — hourly collection containing surface variables including soil moisture |
-| **ERA5 Daily** | `ECMWF/ERA5/DAILY` — daily collection containing pressure-level temperature at 9 levels |
-| **CHIRPS** | Climate Hazards Group InfraRed Precipitation with Station data. 5km daily blended satellite+station product (1981–present) |
-| **Oya** | Google Research quasi-global precipitation product at 5km/30-min. Derived from geostationary VIS-IR using a U-Net (2004–present) |
+| **ERA5-Land** | `ECMWF/ERA5_LAND/HOURLY` -- hourly collection containing surface variables including soil moisture |
+| **ERA5 Pressure Levels** | `ECMWF/ERA5/HOURLY` -- hourly collection from which pressure level bands are extracted by taking daily means. ECMWF/ERA5/DAILY does not expose pressure level bands in GEE |
+| **CHIRPS** | Climate Hazards Group InfraRed Precipitation with Station data. 5km daily blended satellite+station product (1981-present) |
+| **Oya** | Google Research quasi-global precipitation product at 5km/30-min. Derived from geostationary VIS-IR using a U-Net (2004-present) |
 | **NASADEM** | NASA Shuttle Radar Topography Mission DEM at 30m, resampled to 1km for physics models |
 | **NPZ** | NumPy compressed archive format (`.npz`) storing multiple named arrays per sample |
 | **Bilinear resampling** | Spatial interpolation estimating values from the 4 nearest neighbours. Used to upsample ERA5 from 0.25° to the 5km target grid |
 | **Convex hull** | Smallest convex polygon enclosing all shapefile vertices. Used as the GEE export region |
 | **`dataset_index.csv`** | Master CSV listing every sample's paths, split, date, and validity. Primary entry point for Step 2 dataloaders |
 | **Surface bands** | 10 ERA5-Land variables describing conditions at or near the Earth's surface |
-| **Pressure level bands** | 9 ERA5 temperature variables at atmospheric pressure levels from 1000 to 200 hPa |
+| **Pressure level bands** | 8 ERA5 variables at 500/850 hPa: temperature, u-wind, v-wind, and relative humidity |
 
 ---
 
 ## 13. Related Notes
 
-- [[architecture]] — Full project architecture and methodology phases
-- [[step1_implementation_plan]] — Original implementation plan with open questions
-- `src/utils/config.py` — Configuration and logger
-- `src/data_extraction/gee_extractor.py` — GEE export functions
-- `src/data_extraction/drive_manager.py` — Drive download + cleanup
-- `src/data_extraction/npz_converter.py` — Format conversion and band stacking
-- `src/data_extraction/pipeline_runner.py` — End-to-end orchestrator
-- `src/utils/status_report.py` — Completeness and storage verification
+- [[architecture]] -- Full project architecture and methodology phases
+- [[step1_implementation_plan]] -- Original implementation plan with open questions
+- `src/utils/config.py` -- Configuration and logger
+- `src/data_extraction/gee_extractor.py` -- GEE export functions
+- `src/data_extraction/drive_manager.py` -- Drive download + cleanup
+- `src/data_extraction/gcs_manager.py` -- GCS download + cleanup (alternative backend)
+- `src/data_extraction/npz_converter.py` -- Format conversion and band stacking
+- `src/data_extraction/pipeline_runner.py` -- End-to-end orchestrator
+- `src/utils/status_report.py` -- Completeness and storage verification

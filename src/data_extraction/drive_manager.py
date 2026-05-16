@@ -1,3 +1,9 @@
+"""Google Drive management for GEE exports.
+
+This module handles authentication with Google Drive, searching for exported
+GeoTIFFs, downloading them to local storage, and cleaning up Drive storage.
+"""
+
 import os
 import sys
 import argparse
@@ -6,64 +12,83 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from google.oauth2 import service_account
 
-# Add src to Python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from src.utils.config import Config
 
 logger = Config.get_logger()
-
 SCOPES = ['https://www.googleapis.com/auth/drive']
 
 def get_drive_service():
-    """Authenticate and return Google Drive service."""
+    """Authenticates and returns a Google Drive API service instance.
+
+    Returns:
+        googleapiclient.discovery.Resource: An authorized Drive API service.
+    """
     creds = service_account.Credentials.from_service_account_file(
         Config.DRIVE_CREDENTIALS_FILE, scopes=SCOPES)
-    service = build('drive', 'v3', credentials=creds)
-    return service
+    return build('drive', 'v3', credentials=creds)
 
 def find_folder(service, folder_name):
-    """Find a folder ID by name."""
+    """Finds a Google Drive folder ID by its name.
+
+    Args:
+        service (googleapiclient.discovery.Resource): Drive API service.
+        folder_name (str): The name of the folder to find.
+
+    Returns:
+        str or None: The folder ID if found, otherwise None.
+    """
     query = f"mimeType='application/vnd.google-apps.folder' and name='{folder_name}' and trashed=false"
     results = service.files().list(q=query, spaces='drive', fields='nextPageToken, files(id, name)').execute()
     items = results.get('files', [])
-    if not items:
-        return None
-    return items[0]['id']
+    return items[0]['id'] if items else None
 
 def download_file(service, file_id, file_name, destination_path):
-    """Download a file from Google Drive."""
+    """Downloads a file from Google Drive to a local path.
+
+    Args:
+        service (googleapiclient.discovery.Resource): Drive API service.
+        file_id (str): The Drive file ID.
+        file_name (str): The name of the file (for logging).
+        destination_path (str): The local path where the file will be saved.
+    """
     request = service.files().get_media(fileId=file_id)
     fh = io.FileIO(destination_path, 'wb')
     downloader = MediaIoBaseDownload(fh, request)
     done = False
     logger.info(f"Downloading {file_name}...")
-    while done is False:
-        status, done = downloader.next_chunk()
-        # if status:
-        #     logger.info(f"Download {int(status.progress() * 100)}%.")
+    while not done:
+        _, done = downloader.next_chunk()
     logger.info(f"Finished downloading: {destination_path}")
     
 def delete_file(service, file_id, file_name):
-    """Move a file to trash (Editors often can't permanently delete files they don't own)."""
+    """Moves a file to the Google Drive trash.
+
+    Args:
+        service (googleapiclient.discovery.Resource): Drive API service.
+        file_id (str): The Drive file ID.
+        file_name (str): The name of the file (for logging).
+    """
     try:
         service.files().update(fileId=file_id, body={'trashed': True}).execute()
         logger.info(f"Moved to Drive trash: {file_name}")
     except Exception as e:
-        logger.warning(f"Could not trash {file_name} (Owner permissions required). Please empty your Precipitation_Exports folder manually later. Error: {e}")
+        logger.warning(f"Could not trash {file_name}: {e}")
 
 
 def sync_dataset(dataset):
-    """Sync dataset files from Drive to local raw directory."""
+    """Synchronizes a dataset by downloading matching files from Drive and cleaning up.
+
+    Args:
+        dataset (str): The dataset name (e.g., 'era5', 'chirps').
+    """
     service = get_drive_service()
     
-    # 1. Find main export folder
     main_folder_id = find_folder(service, Config.GEE_DRIVE_FOLDER)
     if not main_folder_id:
         logger.error(f"Main export folder '{Config.GEE_DRIVE_FOLDER}' not found in Drive.")
         return
         
-    # 2. Get files inside the dataset prefix
-    # We only want .tif files that match our naming convention: {dataset}_{YYYY-MM-DD}.tif
     query = f"name contains '{dataset}' and name contains '.tif' and trashed=false"
     results = service.files().list(q=query, spaces='drive', fields='nextPageToken, files(id, name)').execute()
     items = results.get('files', [])
@@ -73,7 +98,6 @@ def sync_dataset(dataset):
         return
         
     logger.info(f"Found {len(items)} potential files for {dataset}.")
-    
     warning_shown = False
     
     for item in items:
@@ -82,7 +106,6 @@ def sync_dataset(dataset):
         file_name = os.path.basename(full_name)
         
         try:
-            # Prevent 'era5' from matching 'era5_pl'
             if dataset == "era5" and file_name.startswith("era5_pl_"):
                 continue
 
@@ -102,15 +125,13 @@ def sync_dataset(dataset):
             
             if not os.path.exists(dest_path):
                 download_file(service, file_id, full_name, dest_path)
-                # Try to delete, but stay silent if it fails (known permission issue)
                 try:
                     service.files().update(fileId=file_id, body={'trashed': True}).execute()
                 except:
                     if not warning_shown:
-                        logger.warning(f"Note: Automatic cleanup failed due to Drive permissions. Please manually empty '{Config.GEE_DRIVE_FOLDER}' in your browser to save space.")
+                        logger.warning(f"Note: Automatic cleanup failed due to Drive permissions.")
                         warning_shown = True
             else:
-                # File is already local, try one last time to trash it quietly
                 try:
                     service.files().update(fileId=file_id, body={'trashed': True}).execute()
                 except:

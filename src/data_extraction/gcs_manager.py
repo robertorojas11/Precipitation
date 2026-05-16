@@ -1,24 +1,37 @@
+"""Google Cloud Storage (GCS) management for GEE exports.
+
+This module handles authentication with GCS, downloading exported GeoTIFFs
+to local storage, and cleaning up GCS bucket storage.
+"""
+
 import os
 import sys
 import argparse
 from google.cloud import storage
 from google.oauth2 import service_account
 
-# Add src to Python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from src.utils.config import Config
 
 logger = Config.get_logger()
 
 def get_gcs_client():
-    """Return an authenticated GCS client using the service account."""
+    """Authenticates and returns a Google Cloud Storage client.
+
+    Returns:
+        google.cloud.storage.client.Client: An authorized GCS client.
+    """
     creds = service_account.Credentials.from_service_account_file(
         Config.SERVICE_ACCOUNT_FILE
     )
     return storage.Client(credentials=creds, project=Config.PROJECT_ID)
 
 def sync_dataset(dataset):
-    """Download all blobs for a dataset from GCS to local raw dir, then delete from GCS."""
+    """Synchronizes a dataset by downloading matching blobs from GCS and cleaning up.
+
+    Args:
+        dataset (str): The dataset name (e.g., 'era5', 'chirps').
+    """
     client = get_gcs_client()
     bucket = client.bucket(Config.GCS_BUCKET_NAME)
     prefix = f"{dataset}/"
@@ -31,7 +44,6 @@ def sync_dataset(dataset):
     logger.info(f"Found {len(blobs)} files for {dataset} in GCS.")
 
     for blob in blobs:
-        # blob.name = e.g. "era5/2004/01/era5_2004-01-01.tif"
         parts = blob.name.split("/")
         file_name = parts[-1]
 
@@ -39,7 +51,6 @@ def sync_dataset(dataset):
             continue
 
         try:
-            # Parse date from filename: era5_2004-01-01.tif
             date_str = file_name.replace(f"{dataset}_", "").replace(".tif", "")
             year, month, _ = date_str.split("-")
 
@@ -54,7 +65,6 @@ def sync_dataset(dataset):
             else:
                 logger.info(f"Already exists locally: {dest_path}")
 
-            # Delete from GCS to free space
             blob.delete()
             logger.info(f"Deleted from GCS: {blob.name}")
 

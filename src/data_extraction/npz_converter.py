@@ -1,3 +1,10 @@
+"""Dataset conversion from GeoTIFF to compressed NPZ format.
+
+This module handles spatial resampling of ERA5 data to match the resolution
+of target datasets (CHIRPS/Oya), stacks atmospheric bands, and saves
+the paired inputs/targets as compressed .npz archives for model training.
+"""
+
 import os
 import sys
 import argparse
@@ -8,14 +15,20 @@ import rasterio
 from rasterio.warp import reproject, Resampling
 import pandas as pd
 
-# Add src to Python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from src.utils.config import Config
 
 logger = Config.get_logger()
 
 def get_split(date_str):
-    """Determine data split based on date."""
+    """Determines the dataset split (train/val/test) based on the date.
+
+    Args:
+        date_str (str): ISO date string (YYYY-MM-DD).
+
+    Returns:
+        str: The split name ('train', 'val', 'test', or 'other').
+    """
     dt = datetime.strptime(date_str, "%Y-%m-%d")
     year = dt.year
     if 2004 <= year <= 2015:
@@ -24,11 +37,22 @@ def get_split(date_str):
         return "val"
     elif 2018 <= year <= 2019:
         return "test"
-    else:
-        return "other"
+    return "other"
 
 def process_date(date_str, target_name, era5_path, era5_pl_path, target_path, processed_dir):
-    """Resample ERA5 and save paired NPZ."""
+    """Resamples ERA5 data to the target grid and saves a paired NPZ file.
+
+    Args:
+        date_str (str): ISO date string (YYYY-MM-DD).
+        target_name (str): Name of the target dataset (e.g., 'chirps').
+        era5_path (str): Local path to the ERA5 surface GeoTIFF.
+        era5_pl_path (str): Local path to the ERA5 pressure level GeoTIFF.
+        target_path (str): Local path to the target GeoTIFF.
+        processed_dir (str): Root directory for saving processed files.
+
+    Returns:
+        tuple: (split_name, output_path, success_flag).
+    """
     split = get_split(date_str)
     out_dir = os.path.join(processed_dir, target_name, split)
     os.makedirs(out_dir, exist_ok=True)
@@ -87,7 +111,7 @@ def process_date(date_str, target_name, era5_path, era5_pl_path, target_path, pr
             
             resampled_era5_pl = np.transpose(resampled_era5_pl, (1, 2, 0))
             
-        # Stack surface and pressure level bands (H, W, 19)
+        # Stack surface and pressure level bands: 10 surface + 8 pressure = (H, W, 18)
         stacked_era5 = np.concatenate([resampled_era5, resampled_era5_pl], axis=-1)
             
         np.savez_compressed(
@@ -104,7 +128,11 @@ def process_date(date_str, target_name, era5_path, era5_pl_path, target_path, pr
         return split, "", False
 
 def run_conversion(target_name):
-    """Run the conversion pipeline for a target dataset."""
+    """Orchestrates the conversion process for all available files of a target.
+
+    Args:
+        target_name (str): Name of the target dataset (e.g., 'chirps').
+    """
     logger.info(f"Starting NPZ conversion for target: {target_name}")
     
     era5_dir = os.path.join(Config.RAW_DATA_DIR, "era5")
