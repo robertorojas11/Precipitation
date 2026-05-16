@@ -82,6 +82,10 @@ def sync_dataset(dataset):
         file_name = os.path.basename(full_name)
         
         try:
+            # Prevent 'era5' from matching 'era5_pl'
+            if dataset == "era5" and file_name.startswith("era5_pl_"):
+                continue
+
             if not file_name.startswith(f"{dataset}_") or '-' not in file_name:
                 continue
                 

@@ -5,13 +5,14 @@ tags:
   - gee
   - implementation
 created: 2026-05-12
+updated: 2026-05-16
 status: implemented
 ---
 
 # Step 1: Data Extraction & Acquisition
 
 > [!IMPORTANT]
-> **Status:** ✅ Fully Implemented. All scripts are live and verified against the GEE API.
+> **Status:** ✅ Implemented. Pipeline verified end-to-end. **2004–2013 data (CHIRPS + ERA5 surface + ERA5 pressure levels) is fully downloaded and converted to NPZ.** The 2014–2019 extraction has not yet been completed (see §10 for current metrics).
 
 ## Overview
 
@@ -184,26 +185,28 @@ daily_others = era5.select(OTHER_BANDS).mean()
 daily_image  = daily_precip.addBands(daily_others)
 ```
 
-### 3.2 Pressure Level Bands (9 bands) — `ECMWF/ERA5/DAILY`
+### 3.2 Pressure Level Bands (8 bands) — `ECMWF/ERA5/HOURLY`
 
 | Collection | Resolution | Cadence | Export scale |
 | ---------- | ---------- | ------- | ------------ |
-| `ECMWF/ERA5/DAILY` | 0.25° | Daily | 27,750m |
+| `ECMWF/ERA5/HOURLY` | 0.25° | Hourly → daily mean | 27,750m |
 
-| Band | Pressure Level | Units |
-|------|---------------|-------|
-| `temperature_1000` | 1000 hPa | K |
-| `temperature_925` | 925 hPa | K |
-| `temperature_850` | 850 hPa | K |
-| `temperature_700` | 700 hPa | K |
-| `temperature_600` | 600 hPa | K |
-| `temperature_500` | 500 hPa | K |
-| `temperature_400` | 400 hPa | K |
-| `temperature_300` | 300 hPa | K |
-| `temperature_200` | 200 hPa | K |
+> [!WARNING]
+> The `ECMWF/ERA5/DAILY` collection **does not include pressure levels in GEE**. The implementation correctly uses `ECMWF/ERA5/HOURLY` and takes a daily `.mean()`. The table below reflects the **actual 8 bands** verified in the downloaded files (not 9 as originally planned).
+
+| # | Band | Pressure Level | Units |
+|---|------|---------------|-------|
+| 1 | `temperature_1000` | 1000 hPa | K |
+| 2 | `temperature_925` | 925 hPa | K |
+| 3 | `temperature_850` | 850 hPa | K |
+| 4 | `temperature_700` | 700 hPa | K |
+| 5 | `temperature_500` | 500 hPa | K |
+| 6 | `temperature_300` | 300 hPa | K |
+| 7 | `u_component_of_wind_500` | 500 hPa | m/s |
+| 8 | `v_component_of_wind_500` | 500 hPa | m/s |
 
 > [!NOTE]
-> `ECMWF/ERA5/DAILY` is a **separate GEE collection** from `ERA5_LAND`. Pressure level data is exported independently as `era5_pl_YYYY-MM-DD.tif` and stored under `data/raw/era5_pl/`. Both are stacked in `npz_converter.py` to produce the final 19-band input tensor.
+> Pressure level data is exported independently as `era5_pl_YYYY-MM-DD.tif` and stored under `data/raw/era5_pl/`. It is stacked with ERA5 surface data in `npz_converter.py` to produce the final **18-band** input tensor (10 surface + 8 pressure levels).
 
 ---
 
@@ -319,7 +322,7 @@ data/
 
 | Key | Shape | Dtype | Description |
 |-----|-------|-------|-------------|
-| `inputs` | `(H, W, 19)` | float32 | ERA5 surface (10) + pressure levels (9), bilinearly resampled to 5km |
+| `inputs` | `(H, W, 18)` | float32 | ERA5 surface (10) + pressure levels (8), bilinearly resampled to 5km |
 | `target` | `(H, W, 1)` | float32 | CHIRPS or Oya daily precipitation in mm/day |
 | `date` | scalar string | str | ISO date e.g. `"2007-08-14"` |
 
@@ -398,6 +401,16 @@ python src/data_extraction/drive_manager.py --dataset chirps
 > [!IMPORTANT]
 > Drive scope used is `https://www.googleapis.com/auth/drive` (not `drive.readonly`), as **deletion requires write permissions**. Files are deleted from Drive whether they are newly downloaded **or already existed locally** — ensuring the Drive folder stays clean after every run.
 
+> [!WARNING]
+> **Known Bug (Fixed 2026-05-16):** The Drive search query `name contains 'era5'` was inadvertently matching both `era5_*.tif` and `era5_pl_*.tif` files, causing pressure-level files to be downloaded into the `data/raw/era5/` surface directory. This polluted the ERA5 folder with 3,529 duplicate files.
+>
+> **Fix:** `sync_dataset()` now explicitly skips any file starting with `era5_pl_` when the requested dataset is `era5`:
+> ```python
+> if dataset == "era5" and file_name.startswith("era5_pl_"):
+>     continue
+> ```
+> The 3,529 misplaced files were deleted from both `data/raw/era5/` and `/mnt/data/downscaling/era5/` on 2026-05-16.
+
 ### 7.4 `src/data_extraction/npz_converter.py`
 
 **Purpose:** Read matched ERA5 + ERA5_PL + Target GeoTIFFs per date, bilinearly resample ERA5 to the 5km target grid, stack all 19 bands, and save as compressed `.npz`.
@@ -413,9 +426,9 @@ python src/data_extraction/npz_converter.py --target oya
 ```
 era5_YYYY-MM-DD.tif  (10 bands, 0.25°)  ─┐
                                            ├─ bilinear reproject to 5km grid
-era5_pl_YYYY-MM-DD.tif (9 bands, 0.25°) ─┘
+era5_pl_YYYY-MM-DD.tif (8 bands, 0.25°) ─┘
                                            ↓
-                            np.concatenate → (H, W, 19)
+                            np.concatenate → (H, W, 18)
                                            +
 target_YYYY-MM-DD.tif (1 band, 0.05°)    → (H, W, 1)
                                            ↓
@@ -548,15 +561,16 @@ flowchart TD
     A[pipeline_runner.py\n--start_year --end_year --target] --> B[gee_extractor.py\nexport_era5]
     A --> C[gee_extractor.py\nexport_era5_pressure]
     A --> D[gee_extractor.py\nexport_chirps or export_oya]
-    B & C & D --> E[GEE Batch Tasks\nECMWF/ERA5_LAND/HOURLY\nECMWF/ERA5/DAILY\nUCSB-CHG/CHIRPS/DAILY]
+    B & C & D --> E[GEE Batch Tasks\nECMWF/ERA5_LAND/HOURLY\nECMWF/ERA5/HOURLY\nUCSB-CHG/CHIRPS/DAILY]
     E -->|Poll every 60s| F{All tasks\nCOMPLETED?}
     F -->|No| E
     F -->|Yes| G[drive_manager.py\nsync_dataset]
-    G --> H[Download .tif from Drive\ndata/raw/era5/YYYY/MM/\ndata/raw/era5_pl/YYYY/MM/\ndata/raw/chirps or oya/YYYY/MM/]
+    G --> G1{Skip era5_pl_*\nif dataset==era5}
+    G1 --> H[Download .tif from Drive\ndata/raw/era5/YYYY/MM/\ndata/raw/era5_pl/YYYY/MM/\ndata/raw/chirps or oya/YYYY/MM/]
     H --> I[Delete from Drive\nafter download]
     H --> J[npz_converter.py\n--target chirps or oya]
     J --> K[Bilinear reproject ERA5\nto 5km target grid]
-    K --> L[Stack 10 surface + 9 pressure = 19 bands]
+    K --> L[Stack 10 surface + 8 pressure = 18 bands]
     L --> M[Save .npz\ndata/processed/target/split/YYYY-MM-DD.npz]
     M --> N[Write dataset_index_target.csv]
     N --> O[status_report.py\nVerify completeness + disk usage]
@@ -566,12 +580,50 @@ flowchart TD
 
 ## 10. Success Metrics Status
 
-| Metric | Target | How Verified | Status |
-| ------ | ------ | ------------ | ------ |
-| **Extraction Completeness** | 100% of 2004-2019 days | `status_report.py --target chirps` | ✅ Script ready |
-| **Data Alignment** | 0-pixel offset | `test_raster_alignment.py` per sample | ✅ Script ready |
-| **Storage Efficiency** | Compressed `.npz` | `status_report.py` storage report | ✅ Uses `savez_compressed` |
-| **Reproducibility** | `dataset_index.csv` maps every date | Inspect CSV + `valid_flag == True` | ✅ Auto-generated |
+> [!NOTE]
+> Metrics last verified: **2026-05-16**. Coverage runs from **2004 to 2013 only**. The 2014-2019 range has not yet been fully extracted.
+
+### Current Data Coverage
+
+| Dataset | Years Available | Files | Notes |
+| ------- | --------------- | ----- | ----- |
+| **CHIRPS** | 2004–2013 | 3,653 `.tif` | Target precipitation |
+| **ERA5 surface** | 2004–2013 | 3,653 `.tif` | 10 bands each |
+| **ERA5 pressure levels** | 2004–2013 | 3,653 `.tif` | 8 bands each |
+| **DEM** | — | 0 | ⚠️ Not yet extracted |
+| **OYA** | — | 0 | Not yet extracted |
+
+### Verified Quality Metrics (2026-05-16)
+
+| Metric | Result | Detail |
+| ------ | ------ | ------ |
+| **CHIRPS completeness** | **99.95%** (3,651/3,653 days) | Missing: 2012-05-23, 2012-05-25 |
+| **CHIRPS value range** | 0.0 – 122.5 mm/day | Physically plausible ✅ |
+| **ERA5 temperature range** | 256K – 302K | Physically plausible ✅ |
+| **ERA5 pressure range** | 66kPa – 102kPa | Physically plausible ✅ |
+| **ERA5-PL valid pixel coverage** | ~84.7% per band | Expected ocean/domain masking ✅ |
+| **ERA5 surface valid pixel coverage** | ~20.3% per band | Expected land mask within domain ✅ |
+| **NPZ files created** | 3,651 | Stored in `data/processed/chirps/train/` |
+| **Total processed storage** | **137.39 GB** | 38.53 MB avg per day |
+| **ERA5 directory pollution** | ✅ Cleaned | 3,529 misplaced `era5_pl` files removed |
+
+### Remaining Gaps
+
+| Gap | Priority | Action Needed |
+| --- | -------- | ------------- |
+| DEM not extracted | High | Run `python src/data_extraction/gee_extractor.py --dataset dem` |
+| 2014–2019 data missing | High | Re-run pipeline for `--start_year 2014 --end_year 2019` |
+| OYA not extracted | Medium | Run pipeline with `--target oya` |
+| 2 CHIRPS days missing (2012-05-23, 2012-05-25) | Low | Check GEE availability; likely no CHIRPS data for those dates |
+
+### Original Targets
+
+| Metric | Target | Status |
+| ------ | ------ | ------ |
+| **Extraction Completeness** | 100% of 2004-2019 days | ⚠️ 2004-2013 complete; 2014-2019 pending |
+| **Data Alignment** | 0-pixel offset | ✅ `test_raster_alignment.py` ready |
+| **Storage Efficiency** | Compressed `.npz` | ✅ Uses `savez_compressed` |
+| **Reproducibility** | `dataset_index.csv` maps every date | ✅ Auto-generated |
 
 ---
 
