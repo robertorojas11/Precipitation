@@ -18,6 +18,7 @@ from src.utils.config import Config
 from src.data_extraction import gee_extractor
 from src.data_extraction import drive_manager
 from src.data_extraction import npz_converter
+from src.utils.retries import get_info_with_retry, get_task_status_with_retry, start_task_with_retry
 
 logger = Config.get_logger()
 TASK_BATCH_SIZE = 50
@@ -83,7 +84,7 @@ def wait_for_tasks(tasks, poll_interval=60):
 
     while task_ids:
         for t_id in list(task_ids):
-            status = ee.data.getTaskStatus(t_id)[0]
+            status = get_task_status_with_retry(t_id)
             state = status['state']
             if state in ['COMPLETED', 'FAILED', 'CANCELLED']:
                 if state == 'FAILED':
@@ -133,21 +134,21 @@ def run_month(year, month, target):
 
         if not _local_tif_exists(target, d_str):
             target_fns.append(lambda y=year, m=month, d=d_str, tgt=target: [
-                t for t in [_submit_target_day(y, m, d, tgt)]
+                t for t in [_submit_target_day(y, m, d, tgt)] if t is not None
             ])
 
     logger.info(f"Days in month: {days_count} | Skipped (already local): {skipped}")
 
     if era5_fns:
-        logger.info("-- Submitting ERA5 surface exports to Drive --")
+        logger.info(f"-- Submitting ERA5 surface exports to Drive --")
         submit_in_batches(era5_fns)
-        logger.info("-- Downloading ERA5 surface from Drive --")
+        logger.info(f"-- Downloading ERA5 surface from Drive --")
         drive_manager.sync_dataset("era5")
 
     if era5_pl_fns:
-        logger.info("-- Submitting ERA5 pressure level exports to Drive --")
+        logger.info(f"-- Submitting ERA5 pressure level exports to Drive --")
         submit_in_batches(era5_pl_fns)
-        logger.info("-- Downloading ERA5 pressure levels from Drive --")
+        logger.info(f"-- Downloading ERA5 pressure levels from Drive --")
         drive_manager.sync_dataset("era5_pl")
 
     if target_fns:
@@ -187,7 +188,7 @@ def _submit_era5_day(year, month, date_str):
         region=gee_extractor.DOMAIN_POLYGON,
         scale=27750, crs='EPSG:4326', maxPixels=1e13
     )
-    task.start()
+    start_task_with_retry(task)
     logger.info(f"Submitted ERA5 surface to Drive: {date_str} → {task.id}")
     return task
 
@@ -217,7 +218,7 @@ def _submit_era5_pl_day(year, month, date_str):
         region=gee_extractor.DOMAIN_POLYGON,
         scale=27750, crs='EPSG:4326', maxPixels=1e13
     )
-    task.start()
+    start_task_with_retry(task)
     logger.info(f"Submitted ERA5 pressure to Drive: {date_str} → {task.id}")
     return task
 
@@ -243,7 +244,7 @@ def _submit_target_day(year, month, date_str, target):
                .filterBounds(gee_extractor.DOMAIN_POLYGON)
                .select('precipitation'))
         img_list = col.map(lambda i: i.updateMask(i.gte(0))).toList(1)
-        if img_list.length().getInfo() == 0:
+        if get_info_with_retry(img_list.length()) == 0:
             logger.warning(f"No CHIRPS image for {date_str}")
             return None
         img = ee.Image(img_list.get(0)).clip(gee_extractor.DOMAIN_POLYGON)
@@ -252,6 +253,9 @@ def _submit_target_day(year, month, date_str, target):
                .filterDate(d_start, d_end)
                .filterBounds(gee_extractor.DOMAIN_POLYGON)
                .select(['precipitation']))
+        if get_info_with_retry(col.size()) == 0:
+            logger.warning(f"No OYA image for {date_str}")
+            return None
         img = col.sum().multiply(0.5).clip(gee_extractor.DOMAIN_POLYGON)
 
     task = ee.batch.Export.image.toDrive(
@@ -262,7 +266,7 @@ def _submit_target_day(year, month, date_str, target):
         region=gee_extractor.DOMAIN_POLYGON,
         scale=5566, crs='EPSG:4326', maxPixels=1e13
     )
-    task.start()
+    start_task_with_retry(task)
     logger.info(f"Submitted {target.upper()} to Drive: {date_str} → {task.id}")
     return task
 
@@ -275,6 +279,21 @@ def run_batch(start_year, end_year, target="chirps"):
         target (str): Name of the target dataset ('chirps' or 'oya').
     """
     if not gee_extractor.initialize_gee():
+        sys.exit(1)
+        
+    if gee_extractor.AUTH_MODE == 'service_account':
+        logger.error(
+            "\n" + "="*80 + "\n"
+            "CRITICAL ERROR: Google Earth Engine has initialized using a Service Account.\n"
+            "Because GEE Service Accounts do not have personal Google Drive storage space,\n"
+            "all exports to Google Drive will FAIL with 'Service accounts do not have storage quota'.\n\n"
+            "To resolve this, you MUST authenticate using your personal Google account. Please run:\n"
+            "    earthengine authenticate --auth_mode=notebook\n"
+            "in your terminal, follow the instructions to log in, and then re-run the pipeline.\n"
+            "Once authenticated, GEE will use your personal Drive quota to export files,\n"
+            "while the service account will still be used to download them to local storage.\n" +
+            "="*80 + "\n"
+        )
         sys.exit(1)
 
     current_dt = datetime(start_year, 1, 1)

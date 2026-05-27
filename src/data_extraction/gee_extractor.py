@@ -18,6 +18,7 @@ logger = Config.get_logger()
 
 # Constants
 DOMAIN_POLYGON = None # Initialized after ee.Initialize()
+AUTH_MODE = None  # 'user' or 'service_account'
 
 SURFACE_BANDS = [
     'total_precipitation_hourly', 'temperature_2m', 'dewpoint_temperature_2m',
@@ -44,14 +45,26 @@ def initialize_gee():
     Returns:
         bool: True if initialization was successful, False otherwise.
     """
-    global DOMAIN_POLYGON
+    global DOMAIN_POLYGON, AUTH_MODE
     
     try:
         # 1. Try User OAuth (Required for Drive exports)
         logger.info("Initializing GEE with user OAuth credentials...")
-        ee.Initialize(project=Config.PROJECT_ID)
+        
+        # Save and temporarily remove GOOGLE_APPLICATION_CREDENTIALS to force user auth
+        sa_cred_path = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
+        if sa_cred_path:
+            del os.environ['GOOGLE_APPLICATION_CREDENTIALS']
+            
+        try:
+            ee.Initialize(project=Config.PROJECT_ID)
+        finally:
+            # Always restore environment variable
+            if sa_cred_path:
+                os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = sa_cred_path
         
         # Define the domain polygon AFTER successful initialization
+        # Note: Puerto Rico (~18.2°N, 66.6°W) is well within this domain
         DOMAIN_POLYGON = ee.Geometry.Polygon([[
             [-133.471, 18.626],  # NW  -- open Pacific
             [-124.199, 33.753],  # N   -- Baja California North
@@ -64,6 +77,7 @@ def initialize_gee():
             [-117.667,  5.101],  # SW  -- Eastern Pacific equatorial
         ]])
         
+        AUTH_MODE = 'user'
         logger.info(f"GEE initialized with User Auth. Project: {Config.PROJECT_ID}")
         return True
     except Exception as user_err:
@@ -76,6 +90,7 @@ def initialize_gee():
             ee.Initialize(credentials, project=Config.PROJECT_ID)
             
             # Define polygon for fallback as well
+            # Note: Puerto Rico (~18.2°N, 66.6°W) is well within this domain
             DOMAIN_POLYGON = ee.Geometry.Polygon([[
                 [-133.471, 18.626],
                 [-124.199, 33.753],
@@ -88,7 +103,14 @@ def initialize_gee():
                 [-117.667,  5.101],
             ]])
             
+            AUTH_MODE = 'service_account'
             logger.info(f"GEE initialized with Service Account. Project: {Config.PROJECT_ID}")
+            logger.warning(
+                "WARNING: GEE has initialized with a Service Account. Earth Engine exports to Google Drive "
+                "will FAIL with 'Service accounts do not have storage quota' because service accounts lack Drive storage quota. "
+                "To resolve this, please run 'earthengine authenticate' in your command line or run a script "
+                "containing 'ee.Authenticate()' to log in with your personal GEE user account, which has Drive storage quota."
+            )
             return True
 
         except Exception as sa_err:
@@ -305,6 +327,14 @@ def export_oya(year, month, drive_folder):
     
     tasks = []
     for d_str in local_dates:
+        d_start = ee.Date(d_str)
+        d_end = d_start.advance(1, 'day')
+        daily_imgs = oya.filterDate(d_start, d_end)
+        
+        if daily_imgs.size().getInfo() == 0:
+            logger.warning(f"No Oya image for {d_str}")
+            continue
+
         img = aggregate_daily(d_str).clip(DOMAIN_POLYGON)
         task_name = f"export_oya_{d_str}"
         file_name = f"oya_{d_str}"
@@ -360,6 +390,21 @@ def main():
     args = parser.parse_args()
     
     if not initialize_gee():
+        sys.exit(1)
+        
+    if AUTH_MODE == 'service_account':
+        logger.error(
+            "\n" + "="*80 + "\n"
+            "CRITICAL ERROR: Google Earth Engine has initialized using a Service Account.\n"
+            "Because GEE Service Accounts do not have personal Google Drive storage space,\n"
+            "all exports to Google Drive will FAIL with 'Service accounts do not have storage quota'.\n\n"
+            "To resolve this, you MUST authenticate using your personal Google account. Please run:\n"
+            "    earthengine authenticate --auth_mode=notebook\n"
+            "in your terminal, follow the instructions to log in, and then re-run the pipeline.\n"
+            "Once authenticated, GEE will use your personal Drive quota to export files,\n"
+            "while the service account will still be used to download them to local storage.\n" +
+            "="*80 + "\n"
+        )
         sys.exit(1)
         
     drive_folder = Config.GEE_DRIVE_FOLDER

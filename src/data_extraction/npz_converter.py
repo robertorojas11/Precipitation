@@ -59,7 +59,7 @@ def process_date(date_str, target_name, era5_path, era5_pl_path, target_path, pr
     out_path = os.path.join(out_dir, f"{date_str}.npz")
     
     if os.path.exists(out_path):
-        logger.info(f"NPZ already exists for {date_str}, skipping.")
+        logger.debug(f"NPZ already exists for {date_str}, skipping.")
         return split, out_path, True
         
     try:
@@ -147,6 +147,7 @@ def run_conversion(target_name):
     logger.info(f"Found {len(target_files)} {target_name} files.")
     
     records = []
+    skipped_count = 0
     
     for tgt_path in target_files:
         filename = os.path.basename(tgt_path)
@@ -156,6 +157,22 @@ def run_conversion(target_name):
         era5_path = os.path.join(era5_dir, year, month, f"era5_{date_str}.tif")
         era5_pl_path = os.path.join(era5_pl_dir, year, month, f"era5_pl_{date_str}.tif")
         
+        # Check if NPZ already exists
+        split = get_split(date_str)
+        npz_path = os.path.join(processed_dir, target_name, split, f"{date_str}.npz")
+        if os.path.exists(npz_path):
+            skipped_count += 1
+            records.append({
+                "date": date_str,
+                "split": split,
+                "era5_path": era5_path,
+                "era5_pl_path": era5_pl_path,
+                "target_path": tgt_path,
+                "npz_path": npz_path,
+                "valid_flag": True
+            })
+            continue
+            
         if not os.path.exists(era5_path) or not os.path.exists(era5_pl_path):
             logger.warning(f"ERA5 or ERA5_PL file missing for {date_str}")
             records.append({
@@ -179,6 +196,9 @@ def run_conversion(target_name):
             "npz_path": npz_path,
             "valid_flag": valid
         })
+        
+    if skipped_count > 0:
+        logger.info(f"NPZ already exists for {skipped_count} dates, skipping conversion for those dates.")
         
     # Save index
     index_path = os.path.join(metadata_dir, f"dataset_index_{target_name}.csv")

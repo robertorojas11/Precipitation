@@ -12,6 +12,7 @@ from google.oauth2 import service_account
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from src.utils.config import Config
+from src.utils.retries import retry_on_network_error
 
 logger = Config.get_logger()
 
@@ -26,6 +27,7 @@ def get_gcs_client():
     )
     return storage.Client(credentials=creds, project=Config.PROJECT_ID)
 
+@retry_on_network_error()
 def sync_dataset(dataset):
     """Synchronizes a dataset by downloading matching blobs from GCS and cleaning up.
 
@@ -60,7 +62,9 @@ def sync_dataset(dataset):
 
             if not os.path.exists(dest_path):
                 logger.info(f"Downloading {blob.name} ...")
-                blob.download_to_filename(dest_path)
+                tmp_path = dest_path + ".tmp"
+                blob.download_to_filename(tmp_path)
+                os.rename(tmp_path, dest_path)
                 logger.info(f"Saved: {dest_path}")
             else:
                 logger.info(f"Already exists locally: {dest_path}")

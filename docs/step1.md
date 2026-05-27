@@ -16,7 +16,7 @@ status: implemented
 
 ## Overview
 
-This step retrieves all raw data required for the comparative downscaling experiment (Saha & Ravela 2024). The output is a set of structured, paired `.npz` files on local disk containing ERA5 inputs (surface + pressure levels = **19 bands total**) and the two competing high-resolution targets.
+This step retrieves all raw data required for the comparative downscaling experiment (Saha & Ravela 2024). The output is a set of structured, paired `.npz` files on local disk containing ERA5 inputs (surface + pressure levels = **18 bands total**) and the two competing high-resolution targets.
 
 **Two parallel pipelines are maintained:**
 
@@ -295,7 +295,7 @@ data/
 │   ├── era5/
 │   │   └── YYYY/MM/era5_YYYY-MM-DD.tif          ← 10 surface bands
 │   ├── era5_pl/
-│   │   └── YYYY/MM/era5_pl_YYYY-MM-DD.tif        ← 9 pressure bands
+│   │   └── YYYY/MM/era5_pl_YYYY-MM-DD.tif        <- 8 pressure bands
 │   ├── chirps/
 │   │   └── YYYY/MM/chirps_YYYY-MM-DD.tif
 │   ├── oya/

@@ -14,6 +14,7 @@ from google.oauth2 import service_account
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from src.utils.config import Config
+from src.utils.retries import execute_with_retry, retry_on_network_error
 
 logger = Config.get_logger()
 SCOPES = ['https://www.googleapis.com/auth/drive']
@@ -39,10 +40,11 @@ def find_folder(service, folder_name):
         str or None: The folder ID if found, otherwise None.
     """
     query = f"mimeType='application/vnd.google-apps.folder' and name='{folder_name}' and trashed=false"
-    results = service.files().list(q=query, spaces='drive', fields='nextPageToken, files(id, name)').execute()
+    results = execute_with_retry(service.files().list(q=query, spaces='drive', fields='nextPageToken, files(id, name)'))
     items = results.get('files', [])
     return items[0]['id'] if items else None
 
+@retry_on_network_error()
 def download_file(service, file_id, file_name, destination_path):
     """Downloads a file from Google Drive to a local path.
 
@@ -70,7 +72,7 @@ def delete_file(service, file_id, file_name):
         file_name (str): The name of the file (for logging).
     """
     try:
-        service.files().update(fileId=file_id, body={'trashed': True}).execute()
+        execute_with_retry(service.files().update(fileId=file_id, body={'trashed': True}))
         logger.info(f"Moved to Drive trash: {file_name}")
     except Exception as e:
         logger.warning(f"Could not trash {file_name}: {e}")
@@ -90,7 +92,7 @@ def sync_dataset(dataset):
         return
         
     query = f"name contains '{dataset}' and name contains '.tif' and trashed=false"
-    results = service.files().list(q=query, spaces='drive', fields='nextPageToken, files(id, name)').execute()
+    results = execute_with_retry(service.files().list(q=query, spaces='drive', fields='nextPageToken, files(id, name)'))
     items = results.get('files', [])
     
     if not items:
@@ -106,6 +108,28 @@ def sync_dataset(dataset):
         file_name = os.path.basename(full_name)
         
         try:
+            if dataset == "dem":
+                if file_name != "nasadem_mexico_1km.tif":
+                    continue
+                dest_dir = os.path.join(Config.RAW_DATA_DIR, dataset)
+                os.makedirs(dest_dir, exist_ok=True)
+                dest_path = os.path.join(dest_dir, file_name)
+                
+                if not os.path.exists(dest_path):
+                    download_file(service, file_id, full_name, dest_path)
+                    try:
+                        execute_with_retry(service.files().update(fileId=file_id, body={'trashed': True}))
+                    except:
+                        if not warning_shown:
+                            logger.warning(f"Note: Automatic cleanup failed due to Drive permissions.")
+                            warning_shown = True
+                else:
+                    try:
+                        execute_with_retry(service.files().update(fileId=file_id, body={'trashed': True}))
+                    except:
+                        pass
+                continue
+
             if dataset == "era5" and file_name.startswith("era5_pl_"):
                 continue
 
@@ -126,14 +150,14 @@ def sync_dataset(dataset):
             if not os.path.exists(dest_path):
                 download_file(service, file_id, full_name, dest_path)
                 try:
-                    service.files().update(fileId=file_id, body={'trashed': True}).execute()
+                    execute_with_retry(service.files().update(fileId=file_id, body={'trashed': True}))
                 except:
                     if not warning_shown:
                         logger.warning(f"Note: Automatic cleanup failed due to Drive permissions.")
                         warning_shown = True
             else:
                 try:
-                    service.files().update(fileId=file_id, body={'trashed': True}).execute()
+                    execute_with_retry(service.files().update(fileId=file_id, body={'trashed': True}))
                 except:
                     pass 
         except Exception as e:
