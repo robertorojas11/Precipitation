@@ -10,7 +10,7 @@ from src.utils.config import Config
 
 logger = Config.get_logger()
 
-def check_completeness(target_name, start_year=2004, end_year=2019):
+def check_completeness(target_name, start_year=2004, end_year=2025):
     """Verify that all expected dates have valid NPZ files."""
     start_date = datetime(start_year, 1, 1)
     end_date = datetime(end_year, 12, 31)
@@ -69,7 +69,7 @@ def main():
     parser = argparse.ArgumentParser(description="Pipeline Success Metrics Status Report")
     parser.add_argument("--target", type=str, choices=["chirps", "oya"], default="chirps")
     parser.add_argument("--start", type=int, default=2004)
-    parser.add_argument("--end", type=int, default=2019)
+    parser.add_argument("--end", type=int, default=2025)
     args = parser.parse_args()
     
     logger.info("="*50)

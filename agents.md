@@ -33,5 +33,5 @@ Two parallel pipelines are being trained and evaluated:
 ## Setup & Quirks
 - Auth credentials are set in `.env` (see `.env.example`). Never commit the actual `.env`.
 - The Mexico shapefile is at `data/shape_files/` and used for evaluation masking, not training filtering.
-- Time range is constrained to **2004–2019** due to Oya's earliest availability (2004).
+- Time range is constrained to **2004–2025** due to Oya's earliest availability (2004).
 - CUDA device index must be updated per training machine.

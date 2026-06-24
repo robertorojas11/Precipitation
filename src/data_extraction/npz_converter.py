@@ -31,11 +31,11 @@ def get_split(date_str):
     """
     dt = datetime.strptime(date_str, "%Y-%m-%d")
     year = dt.year
-    if 2004 <= year <= 2015:
+    if 2004 <= year <= 2019:
         return "train"
-    elif 2016 <= year <= 2017:
+    elif 2020 <= year <= 2022:
         return "val"
-    elif 2018 <= year <= 2019:
+    elif 2023 <= year <= 2025:
         return "test"
     return "other"
 
