@@ -53,7 +53,7 @@ def test_alignment(era5_path, target_path):
 
 if __name__ == "__main__":
     # Placeholder paths - replace with actual downloaded files for real testing
-    # E.g., python tests/test_raster_alignment.py data/raw/era5/2004/01/era5_2004-01-01.tif data/raw/chirps/2004/01/chirps_2004-01-01.tif
+    # E.g., python tests/test_raster_alignment.py /mnt/data-r2/RobertoRojas/downscaling/raw/era5/2004/01/era5_2004-01-01.tif /mnt/data-r2/RobertoRojas/downscaling/raw/chirps/2004/01/chirps_2004-01-01.tif
     if len(sys.argv) == 3:
         success = test_alignment(sys.argv[1], sys.argv[2])
     else:

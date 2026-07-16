@@ -39,7 +39,7 @@ Prior to full implementation, the following tests will be executed:
 - `tests/test_raster_alignment.py`: Loads one downloaded ERA5 and Target TIF to verify spatial overlap and CRS.
 
 ## 5. Success Metrics
-- **Extraction Completeness:** 100% of requested days (2004-2019) exported and downloaded.
+- **Extraction Completeness:** 100% of requested days (2004-2025) exported and downloaded.
 - **Data Alignment:** 0-pixel offset between ERA5 resampled grid and target grids.
 - **Storage Efficiency:** `.npz` files use compressed format, keeping total dataset size within local disk limits.
 - **Reproducibility:** `dataset_index.csv` correctly maps every date to its corresponding `.npz` file.

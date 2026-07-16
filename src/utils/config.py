@@ -13,9 +13,9 @@ class Config:
     DRIVE_CREDENTIALS_FILE = os.getenv("GOOGLE_DRIVE_CREDENTIALS")
     
     # Storage & Paths
-    LOCAL_DATA_DIR = os.getenv("LOCAL_DATA_DIR", "./data/era5_oya_mexico")
-    RAW_DATA_DIR = os.getenv("RAW_DATA_DIR", "./data/raw")
-    PROCESSED_DATA_DIR = os.getenv("PROCESSED_DATA_DIR", "./data/processed")
+    LOCAL_DATA_DIR = os.getenv("LOCAL_DATA_DIR", "/mnt/data-r2/RobertoRojas/downscaling/era5_oya_mexico")
+    RAW_DATA_DIR = os.getenv("RAW_DATA_DIR", "/mnt/data-r2/RobertoRojas/downscaling/raw")
+    PROCESSED_DATA_DIR = os.getenv("PROCESSED_DATA_DIR", "/mnt/data-r2/RobertoRojas/downscaling/processed")
     
     # Shapefiles
     ATLANTICO_SHP_PATH = os.getenv("ATLANTICO_SHP_PATH")

@@ -9,6 +9,7 @@ def kill_local_python():
     try:
         subprocess.run(["pkill", "-f", "pipeline_runner.py"], check=False)
         subprocess.run(["pkill", "-f", "drive_manager.py"], check=False)
+        subprocess.run(["pkill", "-f", "gcs_manager.py"], check=False)
         subprocess.run(["pkill", "-f", "ee.Authenticate"], check=False)
         print("Done.")
     except Exception as e:
@@ -17,10 +18,13 @@ def kill_local_python():
 def cancel_gee_tasks():
     print("Initializing Earth Engine...")
     try:
-        ee.Initialize()
+        sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+        from src.data_extraction.gee_extractor import initialize_gee
+        if not initialize_gee():
+            print("Failed to initialize Earth Engine. Cannot cancel remote tasks.")
+            return
+            
         print("Fetching active tasks...")
-        tasks = ee.data.listOperations() # New API method for listing operations
-        # Or the classic way:
         tasks = ee.data.getTaskList()
         
         count = 0

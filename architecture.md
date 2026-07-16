@@ -14,7 +14,7 @@ Two parallel pipelines are maintained for evaluation:
 - `src/models/`: Neural network definitions in PyTorch (`rrdb_gan.py`).
 - `src/training/`: Training loops and experiment management (`train_experiment.py`).
 - `src/utils/`: Helper scripts and utilities for the downscaling process.
-- `data/`: Local storage for `raw`, `processed`, and `shape_files`.
+- `/mnt/data-r2/RobertoRojas/downscaling`: Local storage for `raw`, `processed`, and `shape_files` (moved from `./data`).
 - `docs/`: Step-by-step documentation.
 
 ## Methodology Phases
