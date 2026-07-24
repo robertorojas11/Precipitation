@@ -77,6 +77,10 @@ def run_preprocessing_pipeline(target_name, overwrite=False):
         npz_path = row['npz_path']
         date_str = row['date']
         
+        # Robust path replacement for migrated environments
+        if not os.path.exists(npz_path) and npz_path.startswith("./data/"):
+            npz_path = npz_path.replace("./data/processed", Config.PROCESSED_DATA_DIR).replace("./data/raw", Config.RAW_DATA_DIR)
+            
         if not os.path.exists(npz_path):
             logger.warning(f"File listed in index does not exist: {npz_path}")
             continue

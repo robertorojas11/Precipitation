@@ -70,6 +70,10 @@ def compute_normalization_stats(target_name, log_transform_precip=True):
     for idx, row in train_df.iterrows():
         npz_path = row['npz_path']
         
+        # Robust path replacement for migrated environments
+        if not os.path.exists(npz_path) and npz_path.startswith("./data/"):
+            npz_path = npz_path.replace("./data/processed", Config.PROCESSED_DATA_DIR).replace("./data/raw", Config.RAW_DATA_DIR)
+            
         if not os.path.exists(npz_path):
             logger.warning(f"File missing during stat calculation: {npz_path}")
             continue

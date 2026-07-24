@@ -87,6 +87,10 @@ class PrecipDataset(Dataset):
         row = self.records.iloc[idx]
         npz_path = row['npz_path']
         
+        # Robust path replacement for migrated environments
+        if not os.path.exists(npz_path) and npz_path.startswith("./data/"):
+            npz_path = npz_path.replace("./data/processed", Config.PROCESSED_DATA_DIR).replace("./data/raw", Config.RAW_DATA_DIR)
+            
         with np.load(npz_path) as data:
             inputs = data['inputs']     # (H, W, 18)
             target = data['target']     # (H, W, 1)
