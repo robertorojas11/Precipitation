@@ -121,3 +121,46 @@ class PrecipDataset(Dataset):
         target_t = torch.nan_to_num(target_t, nan=0.0)
         
         return inputs_t, target_t
+
+class FastPrecipDataset(Dataset):
+    """PyTorch Dataset that loads pre-downsampled tensors from local SSD cache."""
+
+    def __init__(self, target_name, split):
+        """Initializes the fast dataset.
+
+        Args:
+            target_name (str): 'chirps' or 'oya'.
+            split (str): 'train', 'val', or 'test'.
+        """
+        self.target_name = target_name
+        self.split = split
+        
+        self.fast_dir = os.path.join("data", "fast_dataset", target_name, split)
+        if not os.path.exists(self.fast_dir):
+            raise FileNotFoundError(
+                f"Fast dataset directory not found: {self.fast_dir}. "
+                "Please run scripts/prepare_fast_dataset.py first."
+            )
+            
+        self.files = sorted([f for f in os.listdir(self.fast_dir) if f.endswith('.npz')])
+        if len(self.files) == 0:
+            logger.warning(f"FastPrecipDataset initialized with 0 samples for target: {target_name}, split: {split}")
+
+    def __len__(self):
+        return len(self.files)
+
+    def __getitem__(self, idx):
+        """Loads pre-downsampled tensors.
+
+        Returns:
+            tuple: (inputs_25km, phys_dem_10km, real_10km, real_5km)
+        """
+        file_path = os.path.join(self.fast_dir, self.files[idx])
+        data = np.load(file_path)
+        
+        return (
+            torch.tensor(data['inputs_25km'], dtype=torch.float32),
+            torch.tensor(data['phys_dem_10km'], dtype=torch.float32),
+            torch.tensor(data['real_10km'], dtype=torch.float32),
+            torch.tensor(data['real_5km'], dtype=torch.float32)
+        )
