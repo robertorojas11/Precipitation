@@ -317,8 +317,16 @@ def export_oya(year, month, drive_folder):
         d_end = d_start.advance(1, 'day')
         daily_imgs = oya.filterDate(d_start, d_end)
         
-        # mm/hr × 0.5hr per image = mm per 30-min slot; sum gives mm/day
-        daily_oya = daily_imgs.sum().multiply(0.5)
+        # Count valid (non-masked) slots per pixel
+        slot_count = daily_imgs.count()
+        
+        # Use masked mean over valid slots, then scale to mm/day
+        # mean mm/hr × 24 hr/day = mm/day (avoids scan-line zeros from fill values)
+        daily_mean_mmhr = daily_imgs.mean()
+        daily_oya = daily_mean_mmhr.multiply(24.0)
+        
+        # Mask pixels where fewer than 30 out of 48 slots were valid (data gaps)
+        daily_oya = daily_oya.updateMask(slot_count.gte(30))
         return daily_oya.set('system:time_start', d_start.millis())
         
     days_in_month = (datetime.strptime(end_date, "%Y-%m-%d") - datetime.strptime(start_date, "%Y-%m-%d")).days

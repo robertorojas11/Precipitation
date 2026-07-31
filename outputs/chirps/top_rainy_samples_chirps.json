@@ -1,0 +1,67 @@
+{
+  "target": "chirps",
+  "metric": "total",
+  "source": "gt",
+  "top": [
+    {
+      "date": "2024-06-20",
+      "split": "test",
+      "value": 1957205.0,
+      "path": "data/fast_dataset/chirps/test/2024-06-20.npz"
+    },
+    {
+      "date": "2023-10-05",
+      "split": "test",
+      "value": 1898738.5,
+      "path": "data/fast_dataset/chirps/test/2023-10-05.npz"
+    },
+    {
+      "date": "2024-07-01",
+      "split": "test",
+      "value": 1593756.625,
+      "path": "data/fast_dataset/chirps/test/2024-07-01.npz"
+    },
+    {
+      "date": "2024-01-24",
+      "split": "test",
+      "value": 1310364.0,
+      "path": "data/fast_dataset/chirps/test/2024-01-24.npz"
+    },
+    {
+      "date": "2024-06-21",
+      "split": "test",
+      "value": 1261777.625,
+      "path": "data/fast_dataset/chirps/test/2024-06-21.npz"
+    },
+    {
+      "date": "2024-09-02",
+      "split": "test",
+      "value": 1238931.875,
+      "path": "data/fast_dataset/chirps/test/2024-09-02.npz"
+    },
+    {
+      "date": "2023-05-13",
+      "split": "test",
+      "value": 1192095.75,
+      "path": "data/fast_dataset/chirps/test/2023-05-13.npz"
+    },
+    {
+      "date": "2025-10-26",
+      "split": "test",
+      "value": 1172773.375,
+      "path": "data/fast_dataset/chirps/test/2025-10-26.npz"
+    },
+    {
+      "date": "2024-10-21",
+      "split": "test",
+      "value": 1169618.75,
+      "path": "data/fast_dataset/chirps/test/2024-10-21.npz"
+    },
+    {
+      "date": "2024-09-06",
+      "split": "test",
+      "value": 1169207.375,
+      "path": "data/fast_dataset/chirps/test/2024-09-06.npz"
+    }
+  ]
+}

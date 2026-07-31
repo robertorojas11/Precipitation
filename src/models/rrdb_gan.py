@@ -86,7 +86,10 @@ class GeneratorGAN1(nn.Module):
         
         out = self.lrelu(self.conv_hr(out))
         out = self.conv_last(out)
-        return out
+        # Clamp output in normalized space to prevent hallucinations.
+        # ±5 corresponds to ~5 standard deviations above/below the training mean,
+        # which is well beyond any physically possible precipitation value.
+        return torch.clamp(out, min=-5.0, max=5.0)
 
 class GeneratorGAN2(nn.Module):
     """GAN-2 Generator (Intermediate 10km -> High-res 5km)."""
@@ -126,7 +129,8 @@ class GeneratorGAN2(nn.Module):
         
         out = self.lrelu(self.conv_hr(out))
         out = self.conv_last(out)
-        return out
+        # Clamp output in normalized space to prevent hallucinations.
+        return torch.clamp(out, min=-5.0, max=5.0)
 
 class PatchGANDiscriminator(nn.Module):
     """Fully convolutional PatchGAN discriminator (Markovian discriminator)."""

@@ -13,8 +13,10 @@ from scipy.stats import genpareto
 class PrecipBiasCorrector:
     """Performs deterministic bias correction and stochastic noise generation."""
 
-    def __init__(self, num_quantiles=1000):
+    def __init__(self, num_quantiles=1000, noise_std=2.0):
         self.num_quantiles = num_quantiles
+        # Controls the physical amplitude of stochastic noise perturbations (mm/day)
+        self.noise_std = noise_std
         self.quantiles = np.linspace(0.0, 100.0, num_quantiles)
         
         # Parameters to fit
@@ -123,22 +125,28 @@ class PrecipBiasCorrector:
         if is_batched:
             N, H, W = pred.shape
             ensemble = np.zeros((N, num_members, H, W))
+            # Normalize spatial filter to unit std to prevent amplitude explosion
+            norm_filter = self.spatial_filter / (np.std(self.spatial_filter) + 1e-8)
             for i in range(N):
                 det = self.apply_deterministic(pred[i])
                 # Vectorized generation of spatially correlated Gaussian noise
                 white_noise = np.random.normal(size=(num_members, H, W))
                 fft_noise = np.fft.fft2(white_noise, axes=(-2, -1))
-                corr_noise = np.fft.ifft2(fft_noise * self.spatial_filter[np.newaxis, :, :], axes=(-2, -1)).real
-                ensemble[i] = np.clip(det[np.newaxis, :, :] + corr_noise, 0.0, 300.0)
+                corr_noise = np.fft.ifft2(fft_noise * norm_filter[np.newaxis, :, :], axes=(-2, -1)).real
+                # Scale by noise_std to produce physically meaningful perturbations
+                ensemble[i] = np.clip(det[np.newaxis, :, :] + self.noise_std * corr_noise, 0.0, 300.0)
             return ensemble
         else:
             H, W = pred.shape
             det = self.apply_deterministic(pred)
+            # Normalize spatial filter to unit std to prevent amplitude explosion
+            norm_filter = self.spatial_filter / (np.std(self.spatial_filter) + 1e-8)
             # Vectorized generation of spatially correlated Gaussian noise
             white_noise = np.random.normal(size=(num_members, H, W))
             fft_noise = np.fft.fft2(white_noise, axes=(-2, -1))
-            corr_noise = np.fft.ifft2(fft_noise * self.spatial_filter[np.newaxis, :, :], axes=(-2, -1)).real
-            ensemble = np.clip(det[np.newaxis, :, :] + corr_noise, 0.0, 300.0)
+            corr_noise = np.fft.ifft2(fft_noise * norm_filter[np.newaxis, :, :], axes=(-2, -1)).real
+            # Scale by noise_std to produce physically meaningful perturbations
+            ensemble = np.clip(det[np.newaxis, :, :] + self.noise_std * corr_noise, 0.0, 300.0)
             return ensemble
 
     def save(self, file_path):

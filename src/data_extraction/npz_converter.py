@@ -65,6 +65,11 @@ def process_date(date_str, target_name, era5_path, era5_pl_path, target_path, pr
     try:
         with rasterio.open(target_path) as tgt_src:
             target_data = tgt_src.read(1)
+            # For Oya targets, apply a spatial median filter to suppress scan-line artifacts
+            # that can arise from missing 30-min slots during daily aggregation
+            if target_name == 'oya':
+                from scipy.ndimage import median_filter
+                target_data = median_filter(target_data, size=3)
             # Expand dims to (H, W, 1) as requested by architecture
             target_data = np.expand_dims(target_data, axis=-1)
             tgt_profile = tgt_src.profile
