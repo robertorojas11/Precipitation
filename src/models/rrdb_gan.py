@@ -171,3 +171,37 @@ class PatchGANDiscriminator(nn.Module):
 
     def forward(self, x):
         return self.model(x)
+
+def load_generator_from_checkpoint(checkpoint_path, generator_cls, in_nc, device='cpu', model_size='auto'):
+    """Loads a GeneratorGAN model from checkpoint with auto-detected capacity or specified size.
+
+    Args:
+        checkpoint_path (str): Path to saved state dict file.
+        generator_cls (type): Generator class (GeneratorGAN1 or GeneratorGAN2).
+        in_nc (int): Input channel count.
+        device (torch.device or str): Target device.
+        model_size (str): 'auto', 'small', or 'large'.
+
+    Returns:
+        nn.Module: Loaded generator model.
+    """
+    state_dict = torch.load(checkpoint_path, map_location=device)
+    
+    if model_size == 'auto':
+        nf = state_dict['conv_trunk.weight'].shape[0] if 'conv_trunk.weight' in state_dict else 32
+        gc = state_dict['rrdb_blocks.0.rdb1.conv1.weight'].shape[0] if 'rrdb_blocks.0.rdb1.conv1.weight' in state_dict else 16
+        rrdb_keys = [k for k in state_dict.keys() if k.startswith('rrdb_blocks.')]
+        if rrdb_keys:
+            block_indices = set(int(k.split('.')[1]) for k in rrdb_keys if k.split('.')[1].isdigit())
+            nb = len(block_indices)
+        else:
+            nb = 4
+    elif model_size == 'large':
+        nf, nb, gc = 64, 8, 32
+    else:  # 'small'
+        nf, nb, gc = 32, 4, 16
+
+    model = generator_cls(in_nc=in_nc, nf=nf, nb=nb, gc=gc).to(device)
+    model.load_state_dict(state_dict)
+    return model
+

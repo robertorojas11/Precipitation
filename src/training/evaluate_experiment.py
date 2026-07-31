@@ -16,7 +16,7 @@ from scipy.stats import ks_2samp
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from src.utils.config import Config
 from src.data_preprocessing.dataset import FastPrecipDataset
-from src.models.rrdb_gan import GeneratorGAN1, GeneratorGAN2
+from src.models.rrdb_gan import GeneratorGAN1, GeneratorGAN2, load_generator_from_checkpoint
 from src.training.bias_correction import PrecipBiasCorrector
 
 def denormalize(tensor, mean, std, log_transform=True):
@@ -100,10 +100,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--target", type=str, required=True, choices=["oya", "chirps"], help="Target name")
     parser.add_argument("--dry-run", action="store_true", help="Run a quick verification on 2 samples")
+    parser.add_argument("--model_size", type=str, default="auto", choices=["auto", "small", "large"], help="Model capacity (auto detects from checkpoint)")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Running evaluation on {device} for target {args.target} (Dry-run: {args.dry_run})")
+    print(f"Running evaluation on {device} for target {args.target} (Dry-run: {args.dry_run}, model_size: {args.model_size})")
 
     # Load statistics
     metadata_dir = os.path.join(Config.LOCAL_DATA_DIR, "metadata")
@@ -120,11 +121,9 @@ def main():
     checkpoint_g1 = os.path.join(Config.LOCAL_DATA_DIR, "checkpoints", args.target, f"gan1_{args.target}.pt")
     checkpoint_g2 = os.path.join(Config.LOCAL_DATA_DIR, "checkpoints", args.target, f"gan2_{args.target}.pt")
 
-    # Instantiate models
-    netG1 = GeneratorGAN1(in_nc=18).to(device)
-    netG2 = GeneratorGAN2(in_nc=4).to(device)
-    netG1.load_state_dict(torch.load(checkpoint_g1, map_location=device))
-    netG2.load_state_dict(torch.load(checkpoint_g2, map_location=device))
+    # Instantiate and load models
+    netG1 = load_generator_from_checkpoint(checkpoint_g1, GeneratorGAN1, in_nc=18, device=device, model_size=args.model_size)
+    netG2 = load_generator_from_checkpoint(checkpoint_g2, GeneratorGAN2, in_nc=4, device=device, model_size=args.model_size)
     netG1.eval()
     netG2.eval()
 
