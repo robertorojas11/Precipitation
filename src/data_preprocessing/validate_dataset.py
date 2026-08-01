@@ -27,22 +27,24 @@ FAST_KEYS = {
 
 def validate(target: str, stage: str) -> dict:
     root = Path(Config.LOCAL_DATA_DIR) / DATASET_VERSION
-    index_path = root / "metadata" / f"dataset_index_{target}.csv"
-    if not index_path.exists():
-        return {
-            "target": target,
-            "stage": stage,
-            "accepted": False,
-            "counts": {"train": 0, "val": 0, "test": 0},
-            "errors": [{"path": str(index_path), "error": "missing_dataset_index"}],
-        }
-    index = pd.read_csv(index_path)
-    accepted = index[index["accepted"] == True]
     errors = []
     counts = {"train": 0, "val": 0, "test": 0}
 
     if stage == "raw":
-        source = pd.read_csv(Path(Config.LOCAL_DATA_DIR) / "metadata" / f"dataset_index_{target}.csv")
+        source_index = (
+            Path(Config.LOCAL_DATA_DIR)
+            / "metadata"
+            / f"dataset_index_{target}.csv"
+        )
+        if not source_index.exists():
+            return {
+                "target": target,
+                "stage": stage,
+                "accepted": False,
+                "counts": counts,
+                "errors": [{"path": str(source_index), "error": "missing_source_index"}],
+            }
+        source = pd.read_csv(source_index)
         source = source[source["valid_flag"] == True]
         for row in source.itertuples(index=False):
             path = Path(row.target_path)
@@ -65,6 +67,18 @@ def validate(target: str, stage: str) -> dict:
             if counts.get(split, 0) != expected:
                 errors.append({"split": split, "error": "index_artifact_count_mismatch", "expected": int(expected), "valid_artifacts": counts.get(split, 0)})
         return {"target": target, "stage": stage, "accepted": not errors, "counts": counts, "errors": errors}
+
+    index_path = root / "metadata" / f"dataset_index_{target}.csv"
+    if not index_path.exists():
+        return {
+            "target": target,
+            "stage": stage,
+            "accepted": False,
+            "counts": counts,
+            "errors": [{"path": str(index_path), "error": "missing_dataset_index"}],
+        }
+    index = pd.read_csv(index_path)
+    accepted = index[index["accepted"] == True]
     if stage == "processed":
         paths = [(row.split, Path(row.npz_path)) for row in accepted.itertuples(index=False)]
         expected_keys = PROCESSED_KEYS

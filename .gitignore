@@ -7,3 +7,5 @@ __pycache__
 notebooks/
 __init__.
 auth/
+logs/
+outputs/v2_clean/

@@ -32,6 +32,7 @@ from src.utils.config import Config
 HEIGHT, WIDTH = 460, 720
 TARGET_CRS = "EPSG:4326"
 TARGET_TRANSFORM = from_origin(-120.0, 35.0, 0.05, 0.05)
+logger = Config.get_logger()
 
 
 def _reproject_bands(path: str, resampling: Resampling) -> tuple[np.ndarray, np.ndarray]:
@@ -141,7 +142,9 @@ def build_target(target_name: str, *, max_daily_mm: float, limit: int | None = N
     dz_dx, dz_dy = compute_terrain_gradients(elevation)
 
     records: list[dict] = []
-    for row in source_index.itertuples(index=False):
+    total_records = len(source_index)
+    logger.info("Building target=%s records=%d", target_name, total_records)
+    for record_number, row in enumerate(source_index.itertuples(index=False), start=1):
         record = {"date": row.date, "split": row.split, "accepted": False}
         target_path = row.target_path
         if target_name == "oya":
@@ -234,6 +237,16 @@ def build_target(target_name: str, *, max_daily_mm: float, limit: int | None = N
         record["npz_path"] = str(destination)
         record["target_sha256"] = file_sha256(target_path)
         records.append(record)
+        if record_number % 100 == 0 or record_number == total_records:
+            accepted_count = sum(bool(item.get("accepted")) for item in records)
+            logger.info(
+                "Build progress target=%s processed=%d/%d accepted=%d rejected=%d",
+                target_name,
+                record_number,
+                total_records,
+                accepted_count,
+                len(records) - accepted_count,
+            )
 
     frame = pd.DataFrame(records)
     index_path = output_metadata / f"dataset_index_{target_name}.csv"
@@ -252,6 +265,7 @@ def build_target(target_name: str, *, max_daily_mm: float, limit: int | None = N
     }
     with (output_metadata / f"manifest_{target_name}.json").open("w") as stream:
         json.dump(summary, stream, indent=2)
+    logger.info("Build completed target=%s summary=%s", target_name, summary)
     return summary
 
 

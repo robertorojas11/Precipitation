@@ -16,10 +16,12 @@ from src.utils.retries import get_task_status_with_retry, start_task_with_retry
 
 
 TASK_BATCH_SIZE = 20
+logger = Config.get_logger()
 
 
 def _wait_for_tasks(tasks, poll_interval: int = 60) -> None:
     pending = {task.id for task in tasks}
+    logger.info("Waiting for %d Earth Engine tasks", len(pending))
     while pending:
         for task_id in list(pending):
             status = get_task_status_with_retry(task_id)
@@ -31,6 +33,7 @@ def _wait_for_tasks(tasks, poll_interval: int = 60) -> None:
                         f"{status.get('error_message', 'no details')}"
                     )
         if pending:
+            logger.info("%d Earth Engine tasks remain active", len(pending))
             time.sleep(poll_interval)
 
 
@@ -73,6 +76,7 @@ def _submit(date: datetime):
 
 
 def export_date_range(start_year: int, end_year: int):
+    logger.info("Starting Oya acquisition for %d-%d", start_year, end_year)
     earth_engine.initialize()
     destination_root = Path(Config.RAW_DATA_DIR) / "v2_clean"
     month = datetime(start_year, 1, 1)
@@ -87,9 +91,18 @@ def export_date_range(start_year: int, end_year: int):
                 functions.append(lambda value=date: [_submit(value)])
             date += relativedelta(days=1)
         if functions:
+            logger.info(
+                "Submitting %d missing Oya days for %s",
+                len(functions),
+                month.strftime("%Y-%m"),
+            )
             _submit_in_batches(functions)
-            drive.sync_oya(destination_root)
+            downloaded = drive.sync_oya(destination_root)
+            logger.info("Downloaded %d Oya files for %s", downloaded, month.strftime("%Y-%m"))
+        else:
+            logger.info("Oya month already complete: %s", month.strftime("%Y-%m"))
         month = next_month
+    logger.info("Oya acquisition completed")
 
 
 def main():

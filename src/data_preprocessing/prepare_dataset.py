@@ -15,6 +15,7 @@ import torch.nn.functional as F
 from src.data_preprocessing.quality import DATASET_VERSION, manifest_sha256
 from src.utils.config import Config
 
+logger = Config.get_logger()
 
 def _paths(target: str) -> tuple[Path, Path, Path]:
     root = Path(Config.LOCAL_DATA_DIR) / DATASET_VERSION
@@ -67,7 +68,8 @@ def compute_stats(target: str) -> dict:
     target_sum = target_sq = 0.0
     target_count = 0
 
-    for row in frame.itertuples(index=False):
+    logger.info("Calculating statistics target=%s training_samples=%d", target, len(frame))
+    for index, row in enumerate(frame.itertuples(index=False), start=1):
         with np.load(row.npz_path) as data:
             features = _load_features(data).astype(np.float64)
             target_values = data["target"][..., 0].astype(np.float64)
@@ -82,6 +84,8 @@ def compute_stats(target: str) -> dict:
         target_sum += selected.sum(dtype=np.float64)
         target_sq += np.square(selected, dtype=np.float64).sum(dtype=np.float64)
         target_count += selected.size
+        if index % 100 == 0 or index == len(frame):
+            logger.info("Statistics progress target=%s samples=%d/%d", target, index, len(frame))
 
     if not target_count or np.any(input_count == 0):
         raise RuntimeError("Cannot calculate statistics: one or more channels have no valid data")
@@ -129,7 +133,8 @@ def build_fast_cache(target: str) -> dict:
     target_std = float(stats["target_std"])
     records: list[dict] = []
 
-    for row in frame.itertuples(index=False):
+    logger.info("Building prepared cache target=%s samples=%d", target, len(frame))
+    for index, row in enumerate(frame.itertuples(index=False), start=1):
         with np.load(row.npz_path) as data:
             features = _load_features(data)
             target_values = data["target"][..., 0]
@@ -183,6 +188,8 @@ def build_fast_cache(target: str) -> dict:
             date=row.date,
         )
         records.append({"date": row.date, "split": row.split, "path": str(destination)})
+        if index % 100 == 0 or index == len(frame):
+            logger.info("Cache progress target=%s samples=%d/%d", target, index, len(frame))
 
     manifest = {
         "preprocessing_version": DATASET_VERSION,
@@ -203,7 +210,8 @@ def build_monthly_climatology(target: str) -> dict:
     sums = np.zeros((12, 460, 720), dtype=np.float64)
     counts = np.zeros((12, 460, 720), dtype=np.uint32)
     files = sorted((fast_root / "train").glob("*.npz"))
-    for path in files:
+    logger.info("Building climatology target=%s training_samples=%d", target, len(files))
+    for index, path in enumerate(files, start=1):
         month = int(path.stem[5:7]) - 1
         with np.load(path) as data:
             target_norm = data["real_5km"][0].astype(np.float64)
@@ -213,6 +221,8 @@ def build_monthly_climatology(target: str) -> dict:
         )
         sums[month] += np.where(valid, target_mm, 0.0)
         counts[month] += valid
+        if index % 100 == 0 or index == len(files):
+            logger.info("Climatology progress target=%s samples=%d/%d", target, index, len(files))
     climatology = np.divide(sums, counts, out=np.zeros_like(sums), where=counts > 0).astype(np.float32)
     output = root / "metadata" / f"monthly_climatology_{target}.npz"
     np.savez_compressed(output, precipitation_mm=climatology, valid_count=counts)

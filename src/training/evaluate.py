@@ -17,6 +17,7 @@ from src.data_preprocessing.quality import DATASET_VERSION
 from src.models.multiscale_unet import MultiscalePrecipUNet
 from src.utils.config import Config
 
+logger = Config.get_logger()
 
 class VerificationAccumulator:
     def __init__(self):
@@ -85,7 +86,13 @@ def _bootstrap_months(months, draws=2000, seed=42):
     }
 
 
-def evaluate(run_dirs: list[Path], split: str = "test", batch_size: int = 2, device_name: str = "cuda"):
+def evaluate(
+    run_dirs: list[Path],
+    split: str = "test",
+    batch_size: int = 2,
+    device_name: str = "cuda",
+    num_workers: int = 4,
+):
     if not run_dirs:
         raise ValueError("At least one run directory is required")
     checkpoints = [
@@ -102,7 +109,13 @@ def evaluate(run_dirs: list[Path], split: str = "test", batch_size: int = 2, dev
             raise ValueError("All ensemble runs must use the same dataset manifest")
     device = torch.device(device_name if device_name.startswith("cuda") and torch.cuda.is_available() else "cpu")
     dataset = PrecipitationDataset(target, split, config.get("context_days", 1))
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=device.type == "cuda")
+    loader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=device.type == "cuda",
+    )
     models = []
     for candidate in checkpoints:
         candidate_config = candidate["config"]
@@ -121,8 +134,12 @@ def evaluate(run_dirs: list[Path], split: str = "test", batch_size: int = 2, dev
     accumulators = {name: VerificationAccumulator() for name in ("model", "era5", "climatology", "dry")}
     years = defaultdict(VerificationAccumulator)
     months = defaultdict(VerificationAccumulator)
+    logger.info(
+        "Evaluating target=%s split=%s samples=%d ensemble=%d device=%s",
+        target, split, len(dataset), len(models), device,
+    )
     with torch.no_grad():
-        for batch in loader:
+        for batch_number, batch in enumerate(loader, start=1):
             tensor_batch = {key: value.to(device) if torch.is_tensor(value) else value for key, value in batch.items()}
             member_predictions = []
             for model in models:
@@ -152,6 +169,8 @@ def evaluate(run_dirs: list[Path], split: str = "test", batch_size: int = 2, dev
                 item_accumulator.update(item_pred, item_obs, item_mask)
                 years[date[:4]].merge(item_accumulator)
                 months[date[:7]].merge(item_accumulator)
+            if batch_number % 25 == 0 or batch_number == len(loader):
+                logger.info("Evaluation progress batches=%d/%d", batch_number, len(loader))
 
     results = {
         "target": target,
@@ -173,6 +192,7 @@ def evaluate(run_dirs: list[Path], split: str = "test", batch_size: int = 2, dev
     output = run_dirs[0] / f"metrics_{split}.json"
     with output.open("w") as stream:
         json.dump(results, stream, indent=2)
+    logger.info("Evaluation completed output=%s model_metrics=%s", output, model_metrics)
     return results
 
 
@@ -182,8 +202,11 @@ def main():
     parser.add_argument("--split", choices=["val", "test"], default="test")
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--num-workers", type=int, default=4)
     args = parser.parse_args()
-    print(json.dumps(evaluate(args.run_dir, args.split, args.batch_size, args.device), indent=2))
+    print(json.dumps(evaluate(
+        args.run_dir, args.split, args.batch_size, args.device, args.num_workers
+    ), indent=2))
 
 
 if __name__ == "__main__":

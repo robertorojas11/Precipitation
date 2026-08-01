@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
-import logging
+from src.utils.logging import configure_logging
 
 class Config:
     # Google Cloud / Earth Engine
@@ -30,17 +30,7 @@ class Config:
     @classmethod
     def get_logger(cls):
         if cls._logger is None:
-            logger = logging.getLogger("PrecipitationPipeline")
-            logger.setLevel(logging.INFO)
-            # Create console handler with formatting
-            ch = logging.StreamHandler()
-            ch.setLevel(logging.INFO)
-            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-            ch.setFormatter(formatter)
-            # Ensure no duplicate handlers
-            if not logger.handlers:
-                logger.addHandler(ch)
-            cls._logger = logger
+            cls._logger = configure_logging(name="precipitation")
         return cls._logger
 
     @classmethod
