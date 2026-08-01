@@ -22,5 +22,8 @@ Preview or run the automated workflow:
 ./venv/bin/python pipeline.py --target both --stages all
 ```
 
+Every non-dry pipeline run performs a mandatory network-storage integrity
+preflight before launching its first processing command.
+
 Data and checkpoints under `/mnt/data-r2/RobertoRojas/downscaling/` are
 external artifacts and are not deleted by repository maintenance.

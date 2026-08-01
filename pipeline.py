@@ -209,6 +209,9 @@ def run_pipeline(options: PipelineOptions, run_directory: Path) -> int:
     storage_checked = False
     for target in options.targets:
         for stage in options.stages:
+            if stage == "storage_check" and storage_checked:
+                logger.info("stage=storage_check status=already_verified")
+                continue
             if not storage_checked and stage != "storage_check":
                 storage_event = {
                     "timestamp": datetime.now(timezone.utc).isoformat(),
