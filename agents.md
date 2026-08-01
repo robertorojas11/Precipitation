@@ -1,37 +1,31 @@
-# Precipitation Downscaling (Mexico)
+# Repository guidance
 
-## Project Overview
-- **Goal:** Downscale 25km ERA5 atmospheric states to 5km probabilistic precipitation maps for Mexico (Lat 12°N-35°N, Lon 84°W-120°W).
-- **Core Models:** Saha & Ravela (2024) — ESRGAN-style RRDB GAN with Conditional Gaussian Process (CGP) and orographic physics priors.
+## Scope
 
-## Architecture & Code Boundaries
-- **Data Ingestion:** GEE extraction to **Google Drive**. Local Python scripts download GeoTIFFs and convert to **.npz** files under `data/processed/`.
-- **Preprocessing:** Z-score normalization per variable using training-split statistics. No spatial patching — full-domain grids.
-- **Physical Models:**
-  - **Upslope Model:** Clausius-Clapeyron forced lifting over ERA5 pressure levels.
-  - **Spectral Model:** FFT-based linear theory of orographic precipitation.
-- **Statistical Model:**
-  - **CGP (Conditional Gaussian Process):** KD-Tree manifold alignment (k=5) of precipitation fields.
-- **GAN Architecture:**
-  - **GAN-1:** ERA5 (0.25°) → ERA5-Land (0.1°) using RRDB + PixelShuffle upsampling.
-  - **GAN-2:** Upscaled target (0.1°) → final target (5km) using RRDB.
-- **Bias Correction:** Stochastic injection + GPD optimal estimation + back projection (Python).
+Maintain one deterministic precipitation-downscaling workflow for CHIRPS and
+Oya. Both targets use the same code and split policy but retain independent
+statistics, manifests, runs, and evaluation results.
 
-## Comparative Experiment
-Two parallel pipelines are being trained and evaluated:
-- **Pipeline A (CHIRPS):** Uses CHIRPS (station-blended, 5km daily) as the high-resolution target.
-- **Pipeline B (Oya):** Uses Google's Oya dataset (AI-derived, 5km 30-min) aggregated to daily as the target.
+## Rules
 
-## Development Workflow
-1. Extract ERA5, CHIRPS, and Oya from GEE → Google Drive (`src/data/gee_extractor.py`).
-2. Download GeoTIFFs and convert to `.npz` (`src/data/drive_downloader.py`, `src/data/npz_converter.py`).
-3. Compute per-band normalization statistics for each pipeline (`src/preprocessing/norm_calculator.py`).
-4. Pre-compute physics channels: Upslope & Spectral (`src/preprocessing/physics_models.py`).
-5. Train GAN-1 and GAN-2 separately per pipeline using `train_experiment.py --target [chirps|oya]`.
-6. Evaluate: CSI, KS statistic, ECDF bias, NMI over the Sierra Madre Occidental terrain.
+- Run Python entry points as modules from the repository root.
+- Preserve explicit source-valid, target-valid, and land masks.
+- Calculate normalization statistics from training data only.
+- Select models on validation years; do not tune against test years.
+- Never silently clip or replace invalid observations.
+- Keep dataset and run manifests with hashes and source provenance.
+- Add or update local unit tests with behavior changes.
+- Treat external checkpoints as immutable historical artifacts unless a run was
+  produced by the current architecture and matching dataset manifest.
 
-## Setup & Quirks
-- Auth credentials are set in `.env` (see `.env.example`). Never commit the actual `.env`.
-- The Mexico shapefile is at `data/shape_files/` and used for evaluation masking, not training filtering.
-- Time range is constrained to **2004–2025** due to Oya's earliest availability (2004).
-- CUDA device index must be updated per training machine.
+## Maintained commands
+
+```bash
+python -m src.data_preprocessing.build_dataset --target chirps
+python -m src.data_preprocessing.prepare_dataset --target chirps --stage all
+python -m src.data_preprocessing.validate_dataset --target chirps --stage fast
+python -m src.training.search --target chirps --stage search
+python -m src.training.evaluate --run-dir RUN_DIRECTORY --split test
+```
+
+See `docs/pipeline.md` for the complete workflow and acceptance gates.

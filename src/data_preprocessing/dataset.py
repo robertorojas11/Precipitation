@@ -1,166 +1,97 @@
-"""PyTorch dataset class for precipitation downscaling.
+"""PyTorch dataset for prepared precipitation downscaling tensors."""
 
-Loads preprocessed NPZ files containing ERA5 inputs, physical model outputs,
-and topography, and normalizes them dynamically based on Z-score statistics.
-"""
+from __future__ import annotations
 
-import os
-import sys
-import json
+from datetime import datetime, timedelta
+from pathlib import Path
+
 import numpy as np
-import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-from src.utils.config import Config
+from src.data_preprocessing.quality import DATASET_VERSION
 
-logger = Config.get_logger()
 
-class PrecipDataset(Dataset):
-    """Custom PyTorch Dataset for precipitation downscaling (Mexico domain)."""
+class PrecipitationDataset(Dataset):
+    """Load prepared tensors and explicit validity masks for one data split."""
 
-    def __init__(self, target_name, split, transform=True, log_transform_precip=True):
-        """Initializes the dataset.
+    def __init__(
+        self,
+        target: str,
+        split: str,
+        context_days: int = 1,
+        data_directory: Path | str = Path("data"),
+    ) -> None:
+        if target not in {"chirps", "oya"}:
+            raise ValueError("target must be 'chirps' or 'oya'")
+        if split not in {"train", "val", "test"}:
+            raise ValueError("split must be 'train', 'val', or 'test'")
+        if context_days not in {1, 3}:
+            raise ValueError("context_days must be 1 or 3")
 
-        Args:
-            target_name (str): 'chirps' or 'oya'.
-            split (str): 'train', 'val', or 'test'.
-            transform (bool): Whether to apply Z-score normalization.
-            log_transform_precip (bool): Whether to apply log1p to precip variables.
-        """
-        self.target_name = target_name
+        self.target = target
         self.split = split
-        self.transform = transform
-        self.log_transform_precip = log_transform_precip
-        
-        # Load dataset index
-        metadata_dir = os.path.join(Config.LOCAL_DATA_DIR, "metadata")
-        index_path = os.path.join(metadata_dir, f"dataset_index_{target_name}.csv")
-        
-        if not os.path.exists(index_path):
-            raise FileNotFoundError(f"Dataset index file not found: {index_path}")
-            
-        df = pd.read_csv(index_path)
-        # Filter by split and valid_flag
-        self.records = df[(df['split'] == split) & (df['valid_flag'] == True)].copy()
-        self.records = self.records.reset_index(drop=True)
-        
-        if len(self.records) == 0:
-            logger.warning(f"PrecipDataset initialized with 0 samples for target: {target_name}, split: {split}")
-            
-        # Load normalization statistics
-        stats_path = os.path.join(metadata_dir, f"norm_stats_{target_name}.json")
-        if self.transform:
-            if not os.path.exists(stats_path):
-                raise FileNotFoundError(
-                    f"Normalization stats file not found: {stats_path}. "
-                    "Please run src/data_preprocessing/norm_calculator.py first."
-                )
-            with open(stats_path, 'r') as f:
-                stats = json.load(f)
-                
-            # Convert stats to PyTorch Tensors for easy broadcasting: shape (C, 1, 1)
-            self.input_mean = torch.tensor(stats['input_mean'], dtype=torch.float32).view(-1, 1, 1)
-            self.input_std = torch.tensor(stats['input_std'], dtype=torch.float32).view(-1, 1, 1)
-            self.target_mean = torch.tensor(stats['target_mean'], dtype=torch.float32).view(-1, 1, 1)
-            self.target_std = torch.tensor(stats['target_std'], dtype=torch.float32).view(-1, 1, 1)
-            
-            # Warn if user config contradicts pre-computed stats config
-            if stats.get('log_transform_precip', True) != self.log_transform_precip:
-                logger.warning(
-                    f"Configured log_transform_precip={self.log_transform_precip} "
-                    f"differs from stats file configuration ({stats.get('log_transform_precip')})."
-                )
+        self.context_days = context_days
+        self.data_directory = Path(data_directory) / DATASET_VERSION / target / split
+        if not self.data_directory.is_dir():
+            raise FileNotFoundError(f"Prepared dataset not found: {self.data_directory}")
 
-    def __len__(self):
-        return len(self.records)
+        paths = sorted(self.data_directory.glob("*.npz"))
+        self.available = {path.stem: path for path in paths}
+        self.files = paths if context_days == 1 else self._files_with_context(paths)
+        if not self.files:
+            raise RuntimeError(f"No usable samples found in {self.data_directory}")
 
-    def __getitem__(self, idx):
-        """Loads a single preprocessed sample.
+    def _files_with_context(self, paths: list[Path]) -> list[Path]:
+        usable = []
+        for path in paths:
+            date = datetime.strptime(path.stem, "%Y-%m-%d")
+            neighbors = [
+                (date + timedelta(days=offset)).strftime("%Y-%m-%d")
+                for offset in (-1, 0, 1)
+            ]
+            if all(neighbor in self.available for neighbor in neighbors):
+                usable.append(path)
+        return usable
 
-        Returns:
-            tuple: (inputs, target)
-                inputs: shape (21, H, W) normalized tensor
-                target: shape (1, H, W) normalized tensor
-        """
-        row = self.records.iloc[idx]
-        npz_path = row['npz_path']
-        
-        # Robust path replacement for migrated environments
-        if not os.path.exists(npz_path) and npz_path.startswith("./data/"):
-            npz_path = npz_path.replace("./data/processed", Config.PROCESSED_DATA_DIR).replace("./data/raw", Config.RAW_DATA_DIR)
-            
-        with np.load(npz_path) as data:
-            inputs = data['inputs']     # (H, W, 18)
-            target = data['target']     # (H, W, 1)
-            upslope = data['upslope']   # (H, W, 1)
-            spectral = data['spectral'] # (H, W, 1)
-            elevation = data['elevation'] # (H, W, 1)
-            
-        # Concatenate inputs to 21 channels: (H, W, 21)
-        inputs_all = np.concatenate([inputs, upslope, spectral, elevation], axis=-1)
-        
-        # Transpose to PyTorch shape layout: (C, H, W)
-        inputs_t = torch.tensor(inputs_all, dtype=torch.float32).permute(2, 0, 1)
-        target_t = torch.tensor(target, dtype=torch.float32).permute(2, 0, 1)
-        
-        # Apply transformation/normalization
-        if self.transform:
-            # 1. Log transform if active (precipitation values are in channel 0)
-            if self.log_transform_precip:
-                inputs_t[0] = torch.log1p(inputs_t[0])
-                target_t[0] = torch.log1p(target_t[0])
-                
-            # 2. Z-score scale
-            inputs_t = (inputs_t - self.input_mean) / self.input_std
-            target_t = (target_t - self.target_mean) / self.target_std
-            
-        # Fill NaNs with 0.0 (e.g. masked ocean regions)
-        inputs_t = torch.nan_to_num(inputs_t, nan=0.0)
-        target_t = torch.nan_to_num(target_t, nan=0.0)
-        
-        return inputs_t, target_t
-
-class FastPrecipDataset(Dataset):
-    """PyTorch Dataset that loads pre-downsampled tensors from local SSD cache."""
-
-    def __init__(self, target_name, split):
-        """Initializes the fast dataset.
-
-        Args:
-            target_name (str): 'chirps' or 'oya'.
-            split (str): 'train', 'val', or 'test'.
-        """
-        self.target_name = target_name
-        self.split = split
-        
-        self.fast_dir = os.path.join("data", "fast_dataset", target_name, split)
-        if not os.path.exists(self.fast_dir):
-            raise FileNotFoundError(
-                f"Fast dataset directory not found: {self.fast_dir}. "
-                "Please run scripts/prepare_fast_dataset.py first."
-            )
-            
-        self.files = sorted([f for f in os.listdir(self.fast_dir) if f.endswith('.npz')])
-        if len(self.files) == 0:
-            logger.warning(f"FastPrecipDataset initialized with 0 samples for target: {target_name}, split: {split}")
-
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.files)
 
-    def __getitem__(self, idx):
-        """Loads pre-downsampled tensors.
+    def _atmospheric_inputs(self, center_path: Path) -> torch.Tensor:
+        if self.context_days == 1:
+            with np.load(center_path) as sample:
+                return torch.from_numpy(sample["inputs_25km"]).float()
 
-        Returns:
-            tuple: (inputs_25km, phys_dem_10km, real_10km, real_5km)
-        """
-        file_path = os.path.join(self.fast_dir, self.files[idx])
-        data = np.load(file_path)
-        
-        return (
-            torch.tensor(data['inputs_25km'], dtype=torch.float32),
-            torch.tensor(data['phys_dem_10km'], dtype=torch.float32),
-            torch.tensor(data['real_10km'], dtype=torch.float32),
-            torch.tensor(data['real_5km'], dtype=torch.float32)
-        )
+        date = datetime.strptime(center_path.stem, "%Y-%m-%d")
+        context = []
+        for offset in (-1, 0, 1):
+            neighbor = (date + timedelta(days=offset)).strftime("%Y-%m-%d")
+            with np.load(self.available[neighbor]) as sample:
+                context.append(torch.from_numpy(sample["inputs_25km"]).float())
+        return torch.cat(context, dim=0)
+
+    def __getitem__(self, index: int) -> dict[str, torch.Tensor | str]:
+        path = self.files[index]
+        atmospheric_inputs = self._atmospheric_inputs(path)
+        with np.load(path) as sample:
+            return {
+                "inputs_25km": atmospheric_inputs,
+                "input_valid_mask_25km": torch.from_numpy(
+                    sample["input_valid_mask_25km"]
+                ).bool(),
+                "phys_dem_10km": torch.from_numpy(sample["phys_dem_10km"]).float(),
+                "target_10km": torch.from_numpy(sample["real_10km"]).float(),
+                "target_valid_mask_10km": torch.from_numpy(
+                    sample["target_valid_mask_10km"]
+                ).bool(),
+                "target_5km": torch.from_numpy(sample["real_5km"]).float(),
+                "target_valid_mask_5km": torch.from_numpy(
+                    sample["target_valid_mask_5km"]
+                ).bool(),
+                "land_mask_5km": torch.from_numpy(sample["land_mask_5km"]).bool(),
+                "era5_precip_5km_norm": torch.from_numpy(
+                    sample["era5_precip_5km_norm"]
+                ).float(),
+                "season": torch.from_numpy(sample["season"]).float(),
+                "date": path.stem,
+            }

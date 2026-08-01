@@ -59,6 +59,3 @@ class Config:
         for directory in directories:
             os.makedirs(directory, exist_ok=True)
             print(f"Ensured directory exists: {directory}")
-
-# Execute initialization upon module import
-Config.init_directories()

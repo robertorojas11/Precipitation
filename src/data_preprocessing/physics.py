@@ -1,8 +1,4 @@
-"""Physical orographic models for precipitation downscaling.
-
-This module implements the Upslope model (Phase 3) and the Spectral linear model
-(Phase 4, Smith & Barstad 2004) in the Fourier domain.
-"""
+"""Orographic feature calculations for precipitation downscaling."""
 
 import numpy as np
 import rasterio
@@ -47,7 +43,7 @@ def compute_terrain_gradients(elevation):
         tuple: (dz_dx, dz_dy) of shape (H, W) in meters/meter.
     """
     elevation_clean = np.nan_to_num(elevation, nan=0.0)
-    H, W = elevation_clean.shape
+    height, width = elevation_clean.shape
     
     # y-axis (latitude) decreases downwards (35.0 to 12.0)
     # x-axis (longitude) increases rightwards (-120.0 to -84.0)
@@ -61,7 +57,7 @@ def compute_terrain_gradients(elevation):
     dz_dx_deg = dz_dx_col / 0.05
     
     # Generate latitude grid to scale longitude spacing
-    lats = 35.0 - np.arange(H)[:, np.newaxis] * 0.05
+    lats = 35.0 - np.arange(height)[:, np.newaxis] * 0.05
     lats_rad = np.radians(lats)
     
     # 1 degree of latitude = 111,120 meters
@@ -116,7 +112,7 @@ def compute_spectral_model(u, v, elevation, tau_c=1000.0, tau_f=1000.0, C_w=0.00
     v_clean = np.nan_to_num(v, nan=0.0)
     elevation_clean = np.nan_to_num(elevation, nan=0.0)
     
-    H, W = elevation_clean.shape
+    height, width = elevation_clean.shape
     
     # Calculate domain average winds
     U = np.mean(u_clean)
@@ -127,8 +123,8 @@ def compute_spectral_model(u, v, elevation, tau_c=1000.0, tau_f=1000.0, C_w=0.00
     dx_meters_avg = 0.05 * 111120.0 * np.cos(np.radians(23.5))
     
     # Zonal and meridional wave numbers (radians per meter)
-    ks = np.fft.fftfreq(W, d=dx_meters_avg) * 2.0 * np.pi
-    ls = np.fft.fftfreq(H, d=dy_meters) * 2.0 * np.pi
+    ks = np.fft.fftfreq(width, d=dx_meters_avg) * 2.0 * np.pi
+    ls = np.fft.fftfreq(height, d=dy_meters) * 2.0 * np.pi
     
     l_grid, k_grid = np.meshgrid(ls, ks, indexing='ij')
     
