@@ -1,5 +1,6 @@
 import unittest
 from tempfile import TemporaryDirectory
+from pathlib import Path
 
 import pipeline
 from src.utils.storage import probe_directory
@@ -56,3 +57,15 @@ class PipelineOrchestratorTests(unittest.TestCase):
             probe = probe_directory(directory, minimum_free_gib=0.0)
             self.assertTrue(probe.healthy)
             self.assertTrue(probe.integrity_verified)
+
+    def test_failed_validation_artifact_is_not_resumed(self):
+        with TemporaryDirectory() as directory:
+            artifact = Path(directory) / "raw.json"
+            artifact.write_text('{"accepted": false}')
+            self.assertFalse(
+                pipeline._artifact_is_complete("chirps", "validate_raw", artifact)
+            )
+            artifact.write_text('{"accepted": true}')
+            self.assertTrue(
+                pipeline._artifact_is_complete("chirps", "validate_raw", artifact)
+            )

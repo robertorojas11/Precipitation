@@ -55,7 +55,8 @@ def _reproject_bands(path: str, resampling: Resampling) -> tuple[np.ndarray, np.
     return values, ensure_finite_features(values)
 
 
-def _reproject_target(path: str) -> tuple[np.ndarray, np.ndarray]:
+def reproject_target(path: str) -> tuple[np.ndarray, np.ndarray]:
+    """Project a precipitation raster onto the exact model evaluation grid."""
     with rasterio.open(path) as source:
         raw = source.read(1, masked=True)
         destination = np.full((HEIGHT, WIDTH), np.nan, dtype=np.float32)
@@ -85,7 +86,8 @@ def _reproject_target(path: str) -> tuple[np.ndarray, np.ndarray]:
     return destination, coverage >= 0.999
 
 
-def _load_slot_count(target_path: str) -> np.ndarray | None:
+def load_slot_count(target_path: str) -> np.ndarray | None:
+    """Load and align Oya's valid half-hourly observation count."""
     path = Path(target_path)
     with rasterio.open(path) as source:
         if source.count >= 2:
@@ -119,7 +121,7 @@ def _build_land_mask(elevation: np.ndarray, metadata_dir: Path) -> np.ndarray:
     chirps_index = chirps_index[chirps_index["valid_flag"] == True].sort_values("date")
     for path in chirps_index["target_path"]:
         if isinstance(path, str) and Path(path).exists():
-            _, coverage = _reproject_target(path)
+            _, coverage = reproject_target(path)
             return coverage & np.isfinite(elevation) & (elevation > -100.0)
     raise RuntimeError("Cannot derive land mask: no valid CHIRPS source raster found")
 
@@ -160,8 +162,8 @@ def build_target(target_name: str, *, max_daily_mm: float, limit: int | None = N
             records.append(record)
             continue
 
-        target, source_target_valid = _reproject_target(target_path)
-        slot_count = _load_slot_count(target_path) if target_name == "oya" else None
+        target, source_target_valid = reproject_target(target_path)
+        slot_count = load_slot_count(target_path) if target_name == "oya" else None
         if target_name == "oya" and slot_count is None:
             record["reject_reasons"] = ["missing_oya_slot_count"]
             records.append(record)

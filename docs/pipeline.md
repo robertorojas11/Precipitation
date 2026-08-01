@@ -1,5 +1,8 @@
 # Pipeline operations
 
+For methodology, equations, inputs, outputs, and stage-to-stage contracts, see
+the [stage documentation index](stages/README.md).
+
 Run commands from the repository root with the environment variables in
 `env.example` configured.
 

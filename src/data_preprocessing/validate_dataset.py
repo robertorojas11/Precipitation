@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import rasterio
 
+from src.data_preprocessing.build_dataset import load_slot_count, reproject_target
 from src.data_preprocessing.quality import DATASET_VERSION, FLOAT_FILL_THRESHOLD, inspect_precipitation
 from src.utils.config import Config
 
@@ -54,18 +55,25 @@ def validate(target: str, stage: str) -> dict:
                 errors.append({"date": row.date, "path": str(path), "error": "missing_file"})
                 continue
             with rasterio.open(path) as raster:
-                values = raster.read(1, masked=True)
-                qc, _ = inspect_precipitation(values.filled(np.nan), ~np.ma.getmaskarray(values))
-                if target == "oya" and raster.count < 2:
-                    errors.append({"date": row.date, "path": str(path), "error": "missing_slot_count_band"})
-                elif not qc.accepted:
-                    errors.append({"date": row.date, "path": str(path), "error": "qc_rejected", "reasons": list(qc.reject_reasons)})
-                else:
-                    counts[row.split] += 1
+                band_count = raster.count
+            values, coverage = reproject_target(str(path))
+            if target == "oya" and band_count >= 2:
+                slot_count = load_slot_count(str(path))
+                coverage &= np.isfinite(slot_count) & (slot_count >= 30)
+            qc, _ = inspect_precipitation(values, coverage)
+            if target == "oya" and band_count < 2:
+                errors.append({"date": row.date, "path": str(path), "error": "missing_slot_count_band"})
+            elif not qc.accepted:
+                errors.append({"date": row.date, "path": str(path), "error": "qc_rejected", "reasons": list(qc.reject_reasons)})
+            else:
+                counts[row.split] += 1
         expected_counts = source.groupby("split").size().to_dict()
         for split, expected in expected_counts.items():
             if counts.get(split, 0) != expected:
                 errors.append({"split": split, "error": "index_artifact_count_mismatch", "expected": int(expected), "valid_artifacts": counts.get(split, 0)})
+        for split in counts:
+            if expected_counts.get(split, 0) == 0:
+                errors.append({"split": split, "error": "empty_required_split"})
         return {"target": target, "stage": stage, "accepted": not errors, "counts": counts, "errors": errors}
 
     index_path = root / "metadata" / f"dataset_index_{target}.csv"
@@ -136,6 +144,9 @@ def validate(target: str, stage: str) -> dict:
                 "split": split, "error": "index_artifact_count_mismatch",
                 "expected": int(expected), "valid_artifacts": counts.get(split, 0),
             })
+    for split in counts:
+        if expected_counts.get(split, 0) == 0:
+            errors.append({"split": split, "error": "empty_required_split"})
     return {
         "target": target,
         "stage": stage,

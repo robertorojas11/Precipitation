@@ -160,6 +160,47 @@ def _artifact(target: str, stage: str) -> Path | None:
     return artifacts.get(stage)
 
 
+def _artifact_is_complete(target: str, stage: str, artifact: Path | None) -> bool:
+    if artifact is None or not artifact.exists():
+        return False
+    if stage.startswith("validate_"):
+        try:
+            return bool(json.loads(artifact.read_text())["accepted"])
+        except (KeyError, json.JSONDecodeError, OSError):
+            return False
+    if stage == "build":
+        try:
+            payload = json.loads(artifact.read_text())
+            import pandas as pd
+            source = pd.read_csv(payload["source_index"])
+            expected = int((source["valid_flag"] == True).sum())
+            return payload["records"] == expected and expected > 0
+        except (KeyError, json.JSONDecodeError, OSError, ValueError):
+            return False
+    if stage == "prepare":
+        try:
+            payload = json.loads(artifact.read_text())
+            import pandas as pd
+            index_path = (
+                Path(Config.LOCAL_DATA_DIR)
+                / DATASET_VERSION
+                / "metadata"
+                / f"dataset_index_{target}.csv"
+            )
+            index = pd.read_csv(index_path)
+            expected = (
+                index[index["accepted"] == True]
+                .groupby("split")
+                .size()
+                .to_dict()
+            )
+            actual = {key: int(value) for key, value in payload["split_counts"].items()}
+            return actual == expected and all(actual.get(split, 0) > 0 for split in ("train", "val", "test"))
+        except (KeyError, json.JSONDecodeError, OSError, ValueError):
+            return False
+    return True
+
+
 def _write_event(path: Path, event: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as stream:
@@ -208,6 +249,7 @@ def run_pipeline(options: PipelineOptions, run_directory: Path) -> int:
     failures = 0
     storage_checked = False
     for target in options.targets:
+        target_changed = False
         for stage in options.stages:
             if stage == "storage_check" and storage_checked:
                 logger.info("stage=storage_check status=already_verified")
@@ -250,7 +292,11 @@ def run_pipeline(options: PipelineOptions, run_directory: Path) -> int:
             }
             _write_event(events_path, event)
 
-            if options.resume and artifact is not None and artifact.exists():
+            if (
+                options.resume
+                and not target_changed
+                and _artifact_is_complete(target, stage, artifact)
+            ):
                 logger.info("target=%s stage=%s status=skipped artifact=%s", target, stage, artifact)
                 _write_event(events_path, {**event, "status": "skipped"})
                 continue
@@ -264,6 +310,8 @@ def run_pipeline(options: PipelineOptions, run_directory: Path) -> int:
                 for command in commands:
                     logger.info("target=%s stage=%s dry_run=%s", target, stage, shlex.join(command))
                 _write_event(events_path, {**event, "status": "dry_run"})
+                if stage != "storage_check":
+                    target_changed = True
                 continue
 
             logger.info("target=%s stage=%s status=running", target, stage)
@@ -287,6 +335,8 @@ def run_pipeline(options: PipelineOptions, run_directory: Path) -> int:
             logger.info("target=%s stage=%s status=%s", target, stage, status)
             if stage == "storage_check" and return_code == 0:
                 storage_checked = True
+            elif return_code == 0:
+                target_changed = True
             if return_code:
                 failures += 1
                 if not options.continue_on_error:

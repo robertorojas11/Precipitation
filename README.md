@@ -7,6 +7,8 @@ The maintained workflow is documented in [docs/pipeline.md](docs/pipeline.md).
 Its structure and scientific constraints are documented in
 [architecture.md](architecture.md). Historical findings that motivated the
 refactor remain in [CODEBASE_RESULTS_REVIEW.md](CODEBASE_RESULTS_REVIEW.md).
+Detailed scientific and operational documentation for every executable stage
+starts at [docs/stages/README.md](docs/stages/README.md).
 
 ## Quick checks
 
