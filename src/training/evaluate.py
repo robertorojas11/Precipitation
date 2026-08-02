@@ -19,6 +19,14 @@ from src.utils.config import Config
 
 logger = Config.get_logger()
 
+
+def _json_default(value):
+    """Convert NumPy scalar results to JSON-native Python values."""
+    if isinstance(value, np.generic):
+        return value.item()
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
 class VerificationAccumulator:
     def __init__(self):
         self.n = 0
@@ -183,15 +191,26 @@ def evaluate(
     }
     model_metrics = results["metrics"]["model"]
     results["acceptance"] = {
-        "pooled_r2_at_least_0_40": model_metrics["r2"] >= 0.40,
-        "every_year_r2_at_least_0_20": all(value["r2"] >= 0.20 for value in results["model_by_year"].values()),
-        "bootstrap_lower_at_least_0_35": results["model_r2_month_bootstrap"]["lower_95"] >= 0.35,
-        "beats_era5_r2": model_metrics["r2"] > results["metrics"]["era5"]["r2"],
-        "beats_climatology_r2": model_metrics["r2"] > results["metrics"]["climatology"]["r2"],
+        "pooled_r2_at_least_0_40": bool(model_metrics["r2"] >= 0.40),
+        "every_year_r2_at_least_0_20": bool(all(
+            value["r2"] >= 0.20 for value in results["model_by_year"].values()
+        )),
+        "bootstrap_lower_at_least_0_35": bool(
+            results["model_r2_month_bootstrap"]["lower_95"] >= 0.35
+        ),
+        "beats_era5_r2": bool(
+            model_metrics["r2"] > results["metrics"]["era5"]["r2"]
+        ),
+        "beats_climatology_r2": bool(
+            model_metrics["r2"] > results["metrics"]["climatology"]["r2"]
+        ),
     }
     output = run_dirs[0] / f"metrics_{split}.json"
-    with output.open("w") as stream:
-        json.dump(results, stream, indent=2)
+    temporary_output = output.with_suffix(".json.tmp")
+    with temporary_output.open("w") as stream:
+        json.dump(results, stream, indent=2, default=_json_default)
+        stream.write("\n")
+    temporary_output.replace(output)
     logger.info("Evaluation completed output=%s model_metrics=%s", output, model_metrics)
     return results
 
@@ -204,9 +223,17 @@ def main():
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--num-workers", type=int, default=4)
     args = parser.parse_args()
-    print(json.dumps(evaluate(
-        args.run_dir, args.split, args.batch_size, args.device, args.num_workers
-    ), indent=2))
+    print(json.dumps(
+        evaluate(
+            args.run_dir,
+            args.split,
+            args.batch_size,
+            args.device,
+            args.num_workers,
+        ),
+        indent=2,
+        default=_json_default,
+    ))
 
 
 if __name__ == "__main__":

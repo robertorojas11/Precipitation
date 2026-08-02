@@ -198,6 +198,24 @@ def _artifact_is_complete(target: str, stage: str, artifact: Path | None) -> boo
             return actual == expected and all(actual.get(split, 0) > 0 for split in ("train", "val", "test"))
         except (KeyError, json.JSONDecodeError, OSError, ValueError):
             return False
+    if stage in {"evaluate_validation", "evaluate_test"}:
+        try:
+            payload = json.loads(artifact.read_text())
+            expected_split = "val" if stage == "evaluate_validation" else "test"
+            return (
+                payload["split"] == expected_split
+                and payload["target"] == target
+                and "r2" in payload["metrics"]["model"]
+                and "acceptance" in payload
+            )
+        except (KeyError, json.JSONDecodeError, OSError, TypeError):
+            return False
+    if stage in {"search", "candidates", "train_final"}:
+        try:
+            payload = json.loads(artifact.read_text())
+            return isinstance(payload, list) and len(payload) > 0
+        except (json.JSONDecodeError, OSError, TypeError):
+            return False
     return True
 
 

@@ -3,6 +3,7 @@ from tempfile import TemporaryDirectory
 from pathlib import Path
 
 import pipeline
+from src.training.evaluate import _json_default
 from src.utils.storage import probe_directory
 
 
@@ -69,3 +70,25 @@ class PipelineOrchestratorTests(unittest.TestCase):
             self.assertTrue(
                 pipeline._artifact_is_complete("chirps", "validate_raw", artifact)
             )
+
+    def test_truncated_evaluation_is_not_resumed(self):
+        with TemporaryDirectory() as directory:
+            artifact = Path(directory) / "metrics_val.json"
+            artifact.write_text('{"target": "chirps",')
+            self.assertFalse(
+                pipeline._artifact_is_complete(
+                    "chirps", "evaluate_validation", artifact
+                )
+            )
+
+    def test_numpy_scalars_are_json_serializable(self):
+        import numpy as np
+
+        payload = __import__("json").dumps(
+            {"accepted": np.bool_(True), "score": np.float64(0.4)},
+            default=_json_default,
+        )
+        self.assertEqual(
+            __import__("json").loads(payload),
+            {"accepted": True, "score": 0.4},
+        )
