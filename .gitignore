@@ -9,3 +9,5 @@ __init__.
 auth/
 logs/
 outputs/v2_clean/
+*.json
+*.pt
