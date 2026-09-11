@@ -13,6 +13,7 @@ python-dateutil
 python-dotenv
 rasterio
 requests
+scipy
 shapely
 torch
 urllib3

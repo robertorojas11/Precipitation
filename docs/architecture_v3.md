@@ -114,10 +114,10 @@ requirement doesn't apply to this project's scope).
 
 | Item | Status | Where |
 |---|---|---|
-| Shapley attribution over input channels | PLANNED | `src/evaluation/shapley_attribution.py` |
-| Per-pixel distribution fitting (Weibull/Gamma/Log-normal/Burr XII/mixture) + zero-inflation | PLANNED | `src/evaluation/pixel_distributions.py` |
-| AIC/BIC family selection + bootstrap Anderson-Darling goodness-of-fit | PLANNED | `src/evaluation/pixel_distributions.py` |
-| Quantile maps + threshold-exceedance products | PLANNED | `src/evaluation/pixel_distributions.py` |
+| Shapley attribution over input channels (exact enumeration + sampling fallback) | DONE | `src/evaluation/shapley_attribution.py` |
+| Per-pixel distribution fitting (Weibull/Gamma/Log-normal/Burr XII/two-component Weibull mixture) + zero-inflation | DONE | `src/evaluation/pixel_distributions.py` |
+| AIC/BIC family selection + bootstrap Anderson-Darling goodness-of-fit (rejects a lowest-AIC family that fails GoF) | DONE | `src/evaluation/pixel_distributions.py` |
+| Quantile maps + threshold-exceedance products | DONE | `src/evaluation/pixel_distributions.py` |
 
 ### Deterministic baseline (continuity)
 
