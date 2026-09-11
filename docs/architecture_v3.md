@@ -86,29 +86,29 @@ requirement doesn't apply to this project's scope).
 
 | Item | Status | Where |
 |---|---|---|
-| Generator (Res3D-style blocks) | PLANNED | `src/models/generator.py` |
-| Discriminator | PLANNED | `src/models/discriminator.py` |
-| `L_D`, `L_GAN(G)`, `L_L1(G)` ensemble (Eqs. 1–4) | PLANNED | `src/training/losses_gan.py` |
-| Frozen-dropout-seed ensemble inference | PLANNED | — |
+| Generator (residual-block backbone, Softplus tail, ensemble via noise + frozen dropout seed) | DONE | `src/models/generator.py` |
+| Discriminator (separate HR/LR paths, anti-quantization noise) | DONE | `src/models/discriminator.py` |
+| `L_D`, `L_GAN(G)`, `L_L1(G)` ensemble (Eqs. 1–4) | DONE | `src/training/losses_gan.py` |
+| Frozen-dropout-seed ensemble inference | DONE | `ConditionalGenerator.sample()` |
 
 ### Candidate B — Regression + EDM residual diffusion (Avila 2026 / Mardani et al.)
 
 | Item | Status | Where |
 |---|---|---|
-| Stage 1 regression U-Net (mean field) | PLANNED | `src/models/regression_stage.py` |
-| Stage 2 EDM residual diffusion, preconditioning (Eqs. 3–4) | PLANNED | `src/models/diffusion_residual.py` |
-| Heun sampler + stochastic churn (Eqs. 6–7) | PLANNED | `src/models/diffusion_residual.py` |
+| Stage 1 regression U-Net (mean field, self-attention at coarsest resolution) | DONE | `src/models/regression_stage.py` |
+| Stage 2 EDM residual diffusion, preconditioning (Eqs. 3–4) | DONE | `src/models/diffusion_residual.py` |
+| Heun sampler + stochastic churn (Eqs. 6–7) | DONE | `src/models/diffusion_residual.py` |
 
 ### η-learning (Chang & Sapsis 2026)
 
 | Item | Status | Where |
 |---|---|---|
-| W1 quantile representation (Eq. 13), Monte Carlo estimate (Eq. 14) | PLANNED | `src/training/eta_learning.py` |
-| Tail-biased quantile sampling (`τ`) | PLANNED | `src/training/eta_learning.py` |
-| ERM pre-training before activating the η term | PLANNED | `src/training/eta_learning.py` |
-| IICT tail-index refresh (Algorithm 1/2) | PLANNED | `src/training/eta_learning.py` |
-| Configurable / gradient-norm-adaptive `λ` | PLANNED | `src/training/eta_learning.py` |
-| `ν0` sourcing per region (empirical vs. hypothesized GEVD) | PLANNED (design in `docs/decisions/0002-implementacion-v2.md` §1.3) | `docs/ETA_LEARNING_NOTES.md` (PASO 10) |
+| W1 quantile representation (Eq. 13), Monte Carlo estimate (Eq. 14) | DONE | `src/training/eta_learning.py` |
+| Tail-biased quantile sampling (`τ`) | DONE | `src/training/eta_learning.py` |
+| ERM pre-training before activating the η term | DONE (schedule tracker; not yet wired into an actual training loop -- no trainable dataset exists yet) | `src/training/eta_learning.py::EtaLearningSchedule` |
+| IICT tail-index refresh (Algorithm 1/2) | DONE (`update_tail_index`; periodic-refresh cadence via `EtaLearningSchedule`) | `src/training/eta_learning.py` |
+| Configurable / gradient-norm-adaptive `λ` | DONE | `src/training/eta_learning.py::balance_lambda` |
+| `ν0` sourcing per region (empirical vs. hypothesized GEVD) | DESIGNED (`docs/decisions/0002-implementacion-v2.md` §1.3); documented in full in `docs/ETA_LEARNING_NOTES.md` | `docs/ETA_LEARNING_NOTES.md` |
 
 ### Interpretability and calibrated products (Avila 2026)
 
@@ -124,7 +124,7 @@ requirement doesn't apply to this project's scope).
 | Item | Status | Where |
 |---|---|---|
 | Original deterministic U-Net (daily CHIRPS/Oya) | DONE (archived, still runnable) | `legacy/deterministic_unet/` |
-| Fresh deterministic baseline for the hourly contract, optional η-learning | PLANNED | `src/models/deterministic_resnet.py` |
+| Fresh deterministic baseline for the hourly contract, optional η-learning | DONE (model); η-learning wiring pending an actual training loop | `src/models/deterministic_resnet.py` |
 
 ### Operational ensemble forecasting (Phase 4)
 
