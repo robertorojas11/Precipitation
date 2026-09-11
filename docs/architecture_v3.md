@@ -3,7 +3,10 @@
 Living document for the migration defined in
 `docs/decisions/0002-implementacion-v2.md`. Updated after each PASO lands,
 not before (transversal rule). See that decision document for full
-rationale; this file tracks *implementation status*.
+rationale; this file tracks *implementation status*. Companion documents:
+`docs/DATA_SOURCES.md` (shapefiles, acquisition, ground-truth cascade),
+`docs/EVALUATION_PROTOCOL.md` (metrics and comparison methodology),
+`docs/ETA_LEARNING_NOTES.md` (`ν0` sourcing and caveats).
 
 ## Two candidate architectures + shared regularizer
 

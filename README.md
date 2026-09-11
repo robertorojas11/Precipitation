@@ -15,6 +15,7 @@ geographic-generalization framework.
 - Migration log: [docs/MIGRATION.md](docs/MIGRATION.md)
 - Data sources (authoritative): [docs/DATA_SOURCES.md](docs/DATA_SOURCES.md)
 - Evaluation protocol: [docs/EVALUATION_PROTOCOL.md](docs/EVALUATION_PROTOCOL.md)
+- η-learning notes (`ν0` sourcing and caveats): [docs/ETA_LEARNING_NOTES.md](docs/ETA_LEARNING_NOTES.md)
 - Stage documentation: [docs/stages/README.md](docs/stages/README.md)
 
 ## Project history
