@@ -79,7 +79,12 @@ requirement doesn't apply to this project's scope).
 | B.1 | Target: IMERG V07, hourly | DONE (acquisition) / PLANNED (dataset build) | `src/data_extraction/imerg.py` |
 | B.2 | Clip ERA5 by IMERG min/max, log transform, pooled-variance normalization | PLANNED | not yet ported to the new region-scoped dataset builder |
 | B.4 | Hierarchical region-union training scenarios (A1–A4) | DEFERRED | mechanism supported by the region registry; not exercised with a multi-region union yet (single-region start, per 0001/0002) |
-| B.5 | CRPS (Eq. 1), percentile-MAE (Eq. 2) | PLANNED | `src/evaluation/` (PASO 8) |
+| B.5 | CRPS (Eq. 1), percentile-MAE (Eq. 2), FSS/meFSS, RAPSD, rank histogram, eccentricity (experimental) | DONE | `src/evaluation/probabilistic_metrics.py` |
+| B.5 | R2/RMSE/MAE/BIAS continuity metrics + block-bootstrap CI | DONE | `src/evaluation/deterministic_metrics.py` |
+| — | Full-field RMSE/SSIM diagnostic + eta-learning cost report | DONE | `src/evaluation/deterministic_metrics.py` |
+| — | Cross-model comparison (deterministic/GAN/regression+diffusion, with/without eta-learning) | DONE (aggregation harness; no real training run yet to feed it) | `src/evaluation/model_comparison.py` |
+| — | Bilinear-interpolation baseline | DONE | `src/evaluation/baselines.py` |
+| — | rainFARM baseline (P1 M195) | ABSENT (raises `NotImplementedError`, never silently skipped) | `src/evaluation/baselines.py` |
 | B.6 | Quantile mapping / few-shot fine-tuning domain adaptation | DEFERRED | Phase 4 groundwork only (§1.5 of 0002) |
 
 ### Candidate A — GAN (P1-inspired)
