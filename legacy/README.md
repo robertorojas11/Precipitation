@@ -1,8 +1,11 @@
 # `legacy/` — archived pre-migration code
 
 This directory holds code that was **archived, not deleted**, during the
-2026-09-01 migration to the v3 generative framework
-(`docs/decisions/0001-methodology-choice.md`, `docs/MIGRATION.md`).
+migration to the v2-generative framework
+(`docs/decisions/0002-implementacion-v2.md`, `docs/MIGRATION.md`). It was
+first archived on the same terms during the reverted attempt #1
+(2026-09-01) and re-archived on `master` on 2026-09-11 once attempt #2
+started, per the same user decisions (OQ-1).
 
 Nothing here is imported by the active v3 code. Everything here is still
 runnable. The pre-migration state is also captured as the git tag
@@ -27,7 +30,12 @@ keeps the *engineering* (masks, train-only stats, hashed manifests) and drops
 the *deterministic model* as the headline result — but the model stays here,
 runnable, as a deterministic baseline for future comparison (P2 compares a
 deterministic ResNet against generative models; this U-Net can play that role
-for the daily task).
+for the daily task). The active v2-generative framework does **not** reuse
+this module directly — per `docs/decisions/0002-implementacion-v2.md` §5.4 it
+gets a fresh `src/models/deterministic_resnet.py` baseline adapted to the new
+hourly ERA5→IMERG data contract, optionally evaluated with the η-learning
+regularizer (§1.2) as a third comparison point alongside the two generative
+candidates.
 
 Files (moved verbatim, only import paths rewritten
 `src.models.multiscale_unet` → `legacy.deterministic_unet.multiscale_unet`,
@@ -74,10 +82,12 @@ arguments must point there.
 An in-progress experimental line (`TemporalTerrainNet`, expanding-window folds
 `fold_2016_2017` … `fold_2024_2025`, feasibility/oracle diagnostics, EMA
 weights, R²-aligned loss). It was **not documented as active** in
-`architecture.md`; the audit marked its status "no determinable". User decision
-(2026-09-01): **archive it** (`docs/decisions/0001-methodology-choice.md`
-OQ-1). Its fold scheme and feasibility ceilings are not carried into the P2
-framework in phase 1, but the code is preserved for reference.
+`architecture.md`; the audit marked its status "no determinable". User
+decision, made in attempt #1 (2026-09-01) and re-confirmed for attempt #2
+(2026-09-11): **archive it**
+(`docs/decisions/0002-implementacion-v2.md` OQ-1). Its fold scheme and
+feasibility ceilings are not carried into the v2-generative framework, but
+the code is preserved for reference.
 
 Import paths rewritten `src.chirps_v3` → `legacy.chirps_v3`. Its outputs remain
 under `outputs/v3_chirps/`. Docs: `docs/CHIRPS_V3_TRAINING.md` (kept, with a

@@ -1,8 +1,9 @@
 # CHIRPS v3 training and validation
 
-> **Archived 2026-09-01.** This line of work was moved to `legacy/chirps_v3/`
+> **Archived 2026-09-11.** This line of work was moved to `legacy/chirps_v3/`
 > (entry point `python -m legacy.pipeline_v3`). See `legacy/README.md` and
-> `docs/decisions/0001-methodology-choice.md` (OQ-1). The commands below are
+> `docs/decisions/0002-implementacion-v2.md` (OQ-1, re-confirmed 2026-09-11
+> after the same decision in the reverted attempt #1). The commands below are
 > unchanged except `pipeline_v3.py` → `python -m legacy.pipeline_v3` and
 > `src.chirps_v3.*` → `legacy.chirps_v3.*`.
 

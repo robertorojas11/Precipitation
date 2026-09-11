@@ -61,10 +61,73 @@ scaling geographic coverage later is configuration, not a pipeline rewrite
 
 ## Ground-truth cascade and ERA5 pure inputs
 
-Documented in `docs/decisions/0002-implementacion-v2.md` §1.4 and expanded
-here once the PASO 3 acquisition modules land (ERA5 cp/lsp extension, IMERG
-V07, and the Oya secondary-refinement adaptation). See that section for the
-current status.
+### Input: pure ERA5 cp + lsp
+
+`src/data_extraction/era5_cds.py` acquires `convective_precipitation` (cp)
+and `large_scale_precipitation` (lsp) from the Copernicus CDS
+(`reanalysis-era5-single-levels`), hourly, on ERA5's native ~0.25° grid,
+scoped to one named region (`src.data_preprocessing.regions`). This is a new
+module: no ERA5-pure (CDS-based) acquisition code previously existed in
+`src/` — the pre-existing `raw/era5_pl` archive (pure ERA5 500/850 hPa
+channels documented in `docs/stages/data-and-resources.md`) was acquired by
+an external, unversioned process. `era5_cds.py` fills that gap for cp/lsp
+specifically and is the acquisition path going forward for this input.
+Delivery: one NetCDF per `(variable, month, region)` under
+`$V2_RAW_DATA_DIR/era5_cds/<region>/<variable>/`, with a hashed manifest.
+Requires `CDSAPI_URL` + `CDSAPI_KEY` (or `~/.cdsapirc`); fails explicitly,
+never falls back to synthetic data (§ Credentials below).
+
+### Primary target: IMERG V07 Final Run
+
+`src/data_extraction/imerg.py` downloads the half-hourly `GPM_3IMERGHH.07`
+product from NASA GES DISC, subsets it to a region bounding box, and
+averages it to hourly (RainShift, P2 M203) to match ERA5's temporal
+resolution. Delivery: one NetCDF/day under
+`$V2_RAW_DATA_DIR/imerg/<region>/`, with a hashed manifest. Requires
+`EARTHDATA_TOKEN` (or username/password, or `~/.netrc`); same
+fail-explicitly policy as ERA5.
+
+### Secondary/refinement target: Oya
+
+Oya (`src/data_extraction/export_oya.py`, via Google Earth Engine) is kept
+as the secondary, refinement-stage target, now region-scoped: passing
+`--region <name>` clips the export to that region's bounding box and writes
+to `$V2_RAW_DATA_DIR/oya/<region>/` instead of the legacy
+`$RAW_DATA_DIR/v2_clean/oya/` path (omitting `--region` reproduces the
+legacy unscoped export unchanged, so `pipeline.py`'s existing `acquire`
+stage for the archived deterministic pipeline is unaffected).
+
+**Known limitations of Oya** (documented explicitly, per PASO 3.2, so it is
+never treated as equivalent in quality to IMERG):
+
+- It is an indirect, IR/VIS-based nowcast product, not a direct
+  microwave/radar retrieval like IMERG.
+- Its training reportedly used IMERG as a partial reference, so treating Oya
+  as fully independent ground truth for the same task IMERG already covers
+  double-counts some of the same information.
+- Weaker performance is expected in arid/mountainous zones (consistent with
+  `docs/stages/data-and-resources.md`'s existing note that its
+  retrieval/model error differs from station-blended products).
+- No guarantee of continued provider availability (`projects/
+  global-precipitation-nowcast/assets/global_estimation` is a third-party
+  Earth Engine asset, not a versioned mission product like IMERG).
+
+### Two-stage cascade vs. single-step design
+
+Documented in `docs/architecture_v3.md` § "Data cascade design": the
+pipeline can train either (a) a single step ERA5 → final target, or (b) a
+two-stage cascade, ERA5 → IMERG (stage 1, supervised) → Oya (stage 2,
+higher-detail refinement). Both options are designed for; which one is used
+for a given training run is a configuration choice, not a hard-coded
+pipeline shape.
+
+### Credentials status (2026-09-11)
+
+Neither CDS nor Earthdata credentials are available yet (confirmed with the
+project owner). `era5_cds.py` and `imerg.py` are implemented and tested
+(credential-gating, resume, manifest logic — no network calls), but **no
+acquisition has been executed and no data has been downloaded** this round,
+matching the same policy from the reverted attempt #1.
 
 ## Legacy sources (unchanged)
 

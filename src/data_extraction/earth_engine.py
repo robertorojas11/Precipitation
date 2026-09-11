@@ -6,6 +6,7 @@ import os
 
 import ee
 
+from src.data_preprocessing import regions as region_defs
 from src.utils.config import Config
 
 
@@ -39,6 +40,18 @@ def initialize() -> None:
         if service_account_path:
             os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = service_account_path
     DOMAIN_POLYGON = ee.Geometry.Polygon(DOMAIN_COORDINATES)
+
+
+def region_geometry(region_name: str) -> "ee.Geometry":
+    """Bounding-box geometry for one named region (PASO 3.2: region-scoped
+    Oya extraction, secondary/refinement target of the ERA5->IMERG->Oya
+    cascade). Uses the plain bounding box, not the basin-polygon intersection
+    -- Oya is a smoothed nowcast product; the finer basin mask is applied
+    later, during preprocessing (``src.data_preprocessing.regions.region_mask``).
+    """
+    region = region_defs.get_region(region_name)
+    lon_min, lat_min, lon_max, lat_max = region.bbox
+    return ee.Geometry.Rectangle([lon_min, lat_min, lon_max, lat_max])
 
 
 def aggregate_oya_day(collection, date: str, minimum_valid_slots: int = 30):

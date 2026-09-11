@@ -1,6 +1,6 @@
 # Project architecture (legacy — deterministic daily pipeline)
 
-> **Superseded 2026-09-01.** This document describes the archived deterministic
+> **Superseded 2026-09-11.** This document describes the archived deterministic
 > daily pipeline, now at `legacy/deterministic_unet/`. The active architecture is
 > `docs/architecture_v3.md`. Kept for reference and because the deterministic
 > pipeline is still runnable (`legacy/README.md`).

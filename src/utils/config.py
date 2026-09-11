@@ -16,10 +16,27 @@ class Config:
     LOCAL_DATA_DIR = os.getenv("LOCAL_DATA_DIR", "/mnt/data-r2/RobertoRojas/downscaling/era5_oya_mexico")
     RAW_DATA_DIR = os.getenv("RAW_DATA_DIR", "/mnt/data-r2/RobertoRojas/downscaling/raw")
     PROCESSED_DATA_DIR = os.getenv("PROCESSED_DATA_DIR", "/mnt/data-r2/RobertoRojas/downscaling/processed")
-    
+
+    # v2-generative acquisition root (ERA5 pure cp/lsp, IMERG, region-scoped Oya).
+    # Kept separate from RAW_DATA_DIR so the archived deterministic pipeline's
+    # raw/era5, raw/era5_pl, raw/chirps, raw/dem trees are never touched.
+    V2_RAW_DATA_DIR = os.getenv(
+        "V2_RAW_DATA_DIR",
+        os.path.join(os.getenv("RAW_DATA_DIR", "/mnt/data-r2/RobertoRojas/downscaling/raw"), "v2_generative"),
+    )
+
     # Shapefiles
     ATLANTICO_SHP_PATH = os.getenv("ATLANTICO_SHP_PATH")
     PACIFICO_SHP_PATH = os.getenv("PACIFICO_SHP_PATH")
+
+    # Copernicus CDS (pure ERA5 cp/lsp acquisition)
+    CDSAPI_URL = os.getenv("CDSAPI_URL")
+    CDSAPI_KEY = os.getenv("CDSAPI_KEY")
+
+    # NASA Earthdata (IMERG acquisition)
+    EARTHDATA_TOKEN = os.getenv("EARTHDATA_TOKEN")
+    EARTHDATA_USERNAME = os.getenv("EARTHDATA_USERNAME")
+    EARTHDATA_PASSWORD = os.getenv("EARTHDATA_PASSWORD")
     
     # GEE Export Configuration
     GEE_DRIVE_FOLDER = os.getenv("GEE_DRIVE_FOLDER", "Precipitation_Exports")
