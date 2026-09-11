@@ -18,9 +18,9 @@ from torch import nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from src.data_preprocessing.dataset import PrecipitationDataset
+from legacy.deterministic_unet.dataset import PrecipitationDataset
 from src.data_preprocessing.quality import DATASET_VERSION
-from src.models.multiscale_unet import MultiscalePrecipUNet
+from legacy.deterministic_unet.multiscale_unet import MultiscalePrecipUNet
 from src.utils.config import Config
 
 

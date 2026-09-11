@@ -8,7 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-from src.chirps_v3.config import FOLDS, ROOT
+from legacy.chirps_v3.config import FOLDS, ROOT
 from src.utils.config import Config
 
 logger = Config.get_logger()
@@ -55,7 +55,7 @@ def run(budget, phase, execute, runtime):
                 logger.info("search job=%d/%d fold=%s run=%s status=skipped result_exists=true",
                             job_number, len(jobs), job["fold"], job["run_name"])
                 continue
-            command = [sys.executable, "-m", "src.chirps_v3.training"]
+            command = [sys.executable, "-m", "legacy.chirps_v3.training"]
             for key, value in {**job, **runtime}.items():
                 if key != "phase": command.extend((f"--{key.replace('_', '-')}", str(value)))
             logger.info("search job=%d/%d fold=%s run=%s status=running",

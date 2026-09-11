@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse, json
 from pathlib import Path
 import numpy as np
-from src.chirps_v3.config import FOLDS, ROOT
+from legacy.chirps_v3.config import FOLDS, ROOT
 
 
 def freeze(results_root: Path = ROOT / "runs", minimum_r2: float = .8) -> dict:

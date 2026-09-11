@@ -12,10 +12,10 @@ import torch
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
 
-from src.chirps_v3.config import ROOT
-from src.chirps_v3.dataset import RollingChirpsDataset
-from src.chirps_v3.metrics import PooledMetrics
-from src.chirps_v3.model import TemporalTerrainNet
+from legacy.chirps_v3.config import ROOT
+from legacy.chirps_v3.dataset import RollingChirpsDataset
+from legacy.chirps_v3.metrics import PooledMetrics
+from legacy.chirps_v3.model import TemporalTerrainNet
 from src.utils.config import Config
 
 logger = Config.get_logger()

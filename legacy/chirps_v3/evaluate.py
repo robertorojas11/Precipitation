@@ -5,9 +5,9 @@ import argparse, json
 from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
-from src.chirps_v3.dataset import RollingChirpsDataset
-from src.chirps_v3.metrics import PooledMetrics
-from src.chirps_v3.model import TemporalTerrainNet
+from legacy.chirps_v3.dataset import RollingChirpsDataset
+from legacy.chirps_v3.metrics import PooledMetrics
+from legacy.chirps_v3.model import TemporalTerrainNet
 
 
 def evaluate(checkpoint_path: Path, batch_size=2, device_name="cuda", num_workers=4):

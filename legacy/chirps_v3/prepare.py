@@ -4,8 +4,8 @@ from __future__ import annotations
 import argparse, json
 from pathlib import Path
 import numpy as np
-from src.chirps_v3.config import FOLDS, ROOT, Fold
-from src.chirps_v3.dataset import discover_samples
+from legacy.chirps_v3.config import FOLDS, ROOT, Fold
+from legacy.chirps_v3.dataset import discover_samples
 
 
 def compute_fold_stats(fold: Fold, output: Path | None = None) -> dict:

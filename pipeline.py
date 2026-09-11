@@ -105,14 +105,14 @@ def _commands(target: str, stage: str, options: PipelineOptions) -> list[list[st
         )]
     if stage in {"search", "candidates"}:
         return [module(
-            "src.training.search", "--target", target, "--stage", stage,
+            "legacy.deterministic_unet.search", "--target", target, "--stage", stage,
             "--batch-size", options.batch_size,
             "--num-workers", options.num_workers,
             "--device", options.device,
         )]
     if stage == "train_final":
         return [module(
-            "src.training.search", "--target", target, "--stage", "final",
+            "legacy.deterministic_unet.search", "--target", target, "--stage", "final",
             "--batch-size", options.batch_size,
             "--num-workers", options.num_workers,
             "--device", options.device,
@@ -120,7 +120,7 @@ def _commands(target: str, stage: str, options: PipelineOptions) -> list[list[st
     if stage in {"evaluate_validation", "evaluate_test"}:
         split = "val" if stage == "evaluate_validation" else "test"
         return [module(
-            "src.training.evaluate",
+            "legacy.deterministic_unet.evaluate",
             "--run-dir", *final_runs,
             "--split", split,
             "--batch-size", options.batch_size,
@@ -129,7 +129,7 @@ def _commands(target: str, stage: str, options: PipelineOptions) -> list[list[st
         )]
     if stage == "report":
         return [module(
-            "src.training.report",
+            "legacy.deterministic_unet.report",
             "--run-dir", *final_runs,
             "--split", "test",
             "--batch-size", options.batch_size,

@@ -8,7 +8,7 @@ from src.data_preprocessing.quality import (
     inspect_precipitation,
     masked_r2,
 )
-from src.training.train import compute_losses
+from legacy.deterministic_unet.train import compute_losses
 
 
 class PrecipitationQCTests(unittest.TestCase):

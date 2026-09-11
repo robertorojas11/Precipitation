@@ -9,5 +9,10 @@ __init__.
 auth/
 logs/
 outputs/v2_clean/
+outputs/legacy_v2_clean_deterministic/
+outputs/v3_chirps/
+outputs/v3/
 *.json
 *.pt
+*.nc
+*.nc.part

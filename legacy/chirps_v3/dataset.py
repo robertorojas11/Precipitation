@@ -11,7 +11,7 @@ import torch
 from torch.nn import functional as F
 from torch.utils.data import Dataset
 
-from src.chirps_v3.config import PREPARED_ROOT, ROOT, Fold, get_fold
+from legacy.chirps_v3.config import PREPARED_ROOT, ROOT, Fold, get_fold
 from src.utils.config import Config
 
 
@@ -75,7 +75,7 @@ class RollingChirpsDataset(Dataset):
         if not fold_stats_path.exists():
             raise FileNotFoundError(
                 f"Training-only fold statistics not found: {fold_stats_path}. "
-                "Run python -m src.chirps_v3.prepare first."
+                "Run python -m legacy.chirps_v3.prepare first."
             )
         fold_stats = json.loads(fold_stats_path.read_text())
         self.input_mean = torch.tensor(fold_stats["input_mean_in_v2_space"]).view(18, 1, 1)

@@ -5,7 +5,7 @@ import argparse, json, logging, subprocess, sys, time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from src.chirps_v3.config import ROOT, write_contract
+from legacy.chirps_v3.config import ROOT, write_contract
 from src.utils.logging import configure_logging
 
 STAGES = ("storage_check", "contract", "prepare_folds", "feasibility", "search_manifest", "train_search", "freeze", "verify_2026")
@@ -35,17 +35,17 @@ def command(stage, args):
     py = sys.executable
     if stage == "storage_check":
         return [py, "-m", "src.utils.storage", "--minimum-free-gib", str(args.minimum_free_gib), "--output", str(ROOT / "validation" / "storage.json")]
-    if stage == "feasibility": return [py, "-m", "src.chirps_v3.feasibility"]
-    if stage == "prepare_folds": return [py, "-m", "src.chirps_v3.prepare"]
-    if stage == "search_manifest": return [py, "-m", "src.chirps_v3.search", "--budget", str(args.budget)]
+    if stage == "feasibility": return [py, "-m", "legacy.chirps_v3.feasibility"]
+    if stage == "prepare_folds": return [py, "-m", "legacy.chirps_v3.prepare"]
+    if stage == "search_manifest": return [py, "-m", "legacy.chirps_v3.search", "--budget", str(args.budget)]
     if stage == "train_search":
-        return [py, "-m", "src.chirps_v3.search", "--budget", str(args.budget), "--phase", args.phase, "--execute",
+        return [py, "-m", "legacy.chirps_v3.search", "--budget", str(args.budget), "--phase", args.phase, "--execute",
                 "--epochs", str(args.epochs), "--batch-size", str(args.batch_size), "--accumulation-steps", str(args.accumulation_steps),
                 "--device", args.device, "--num-workers", str(args.num_workers)]
-    if stage == "freeze": return [py, "-m", "src.chirps_v3.freeze"]
+    if stage == "freeze": return [py, "-m", "legacy.chirps_v3.freeze"]
     if stage == "verify_2026":
         if not args.holdout_index: raise ValueError("--holdout-index is required for verify_2026")
-        return [py, "-m", "src.chirps_v3.freeze", "--verify-2026-index", str(args.holdout_index)]
+        return [py, "-m", "legacy.chirps_v3.freeze", "--verify-2026-index", str(args.holdout_index)]
     return None
 
 

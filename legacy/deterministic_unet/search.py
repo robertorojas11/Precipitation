@@ -31,7 +31,7 @@ def _run(
     device: str,
 ):
     command = [
-        sys.executable, "-m", "src.training.train",
+        sys.executable, "-m", "legacy.deterministic_unet.train",
         "--target", target, "--epochs", str(epochs), "--run-name", name,
         "--learning-rate", str(parameters["learning_rate"]),
         "--base-width", str(parameters["base_width"]),

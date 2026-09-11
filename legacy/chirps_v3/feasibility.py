@@ -8,9 +8,9 @@ import numpy as np
 import torch
 from torch.nn import functional as F
 
-from src.chirps_v3.config import PREPARED_ROOT, ROOT, write_contract
-from src.chirps_v3.dataset import discover_samples, source_stats
-from src.chirps_v3.metrics import PooledMetrics
+from legacy.chirps_v3.config import PREPARED_ROOT, ROOT, write_contract
+from legacy.chirps_v3.dataset import discover_samples, source_stats
+from legacy.chirps_v3.metrics import PooledMetrics
 
 
 def masked_coarse_oracle(target, mask, factor):

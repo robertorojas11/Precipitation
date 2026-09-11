@@ -3,7 +3,7 @@ from tempfile import TemporaryDirectory
 from pathlib import Path
 
 import pipeline
-from src.training.evaluate import _json_default
+from legacy.deterministic_unet.evaluate import _json_default
 from src.utils.storage import probe_directory
 
 

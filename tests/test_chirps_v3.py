@@ -1,14 +1,14 @@
 import unittest
 import numpy as np
 import torch
-import pipeline_v3
+from legacy import pipeline_v3
 
-from src.chirps_v3.config import FOLDS, get_fold
-from src.chirps_v3.dataset import context_offsets, _terrain_features
-from src.chirps_v3.feasibility import masked_coarse_oracle
-from src.chirps_v3.metrics import PooledMetrics
-from src.chirps_v3.model import TemporalTerrainNet
-from src.chirps_v3.training import EMA, r2_aligned_loss
+from legacy.chirps_v3.config import FOLDS, get_fold
+from legacy.chirps_v3.dataset import context_offsets, _terrain_features
+from legacy.chirps_v3.feasibility import masked_coarse_oracle
+from legacy.chirps_v3.metrics import PooledMetrics
+from legacy.chirps_v3.model import TemporalTerrainNet
+from legacy.chirps_v3.training import EMA, r2_aligned_loss
 
 
 class V3ContractTests(unittest.TestCase):

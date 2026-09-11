@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 import json
 
-from src.chirps_v3 import VERSION
+from legacy.chirps_v3 import VERSION
 
 
 @dataclass(frozen=True)

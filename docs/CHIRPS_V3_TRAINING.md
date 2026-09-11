@@ -1,5 +1,11 @@
 # CHIRPS v3 training and validation
 
+> **Archived 2026-09-01.** This line of work was moved to `legacy/chirps_v3/`
+> (entry point `python -m legacy.pipeline_v3`). See `legacy/README.md` and
+> `docs/decisions/0001-methodology-choice.md` (OQ-1). The commands below are
+> unchanged except `pipeline_v3.py` → `python -m legacy.pipeline_v3` and
+> `src.chirps_v3.*` → `legacy.chirps_v3.*`.
+
 ## Objective and evidence standard
 
 This workflow targets pooled, masked, pixel-day R² in physical millimetres greater than 0.80. CHIRPS is used only as the supervised target; it is never supplied as a predictor. The target is a research objective, not a promised outcome. The `feasibility` stage measures target-derived 10 km and 25 km oracle ceilings first. If the 25 km oracle is below 0.80, more architecture search cannot by itself establish that the available coarse information supports the goal.
