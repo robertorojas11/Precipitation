@@ -268,11 +268,41 @@ principio respecto al intento #1)
   `src/chirps_v3/` y `pipeline_v3.py` → `legacy/chirps_v3/`.
 - **OQ-2 (heredada).** No se revive `rrdb_gan.py` del historial de git; el
   Candidato A se escribe fresco contra P1.
-- **OQ-3 — Credenciales CDS/Earthdata.** No disponibles (confirmado con el
-  usuario 2026-09-11). Los módulos de adquisición nuevos (`era5_cds.py`
-  extendido, `imerg.py`) se implementan completos pero **no se ejecutan**
-  esta ronda — fallan explícitamente ante variables de entorno faltantes, sin
-  fallback sintético.
+- **OQ-3 — Credenciales CDS/Earthdata.** *Resuelto 2026-09-21 (superado, no
+  ya no aplica).* Documentado como no disponibles el 2026-09-11. El usuario
+  confirmó el 2026-09-21 que sí tiene credenciales de Earth Engine (las
+  mismas que ya usa `export_oya.py`, `auth/service_account.json`), y se
+  verificó contra el catálogo de Earth Engine que tanto `ECMWF/ERA5/HOURLY`
+  (bandas `mean_convective_precipitation_rate` /
+  `mean_large_scale_precipitation_rate`) como `NASA/GPM_L3/IMERG_V07`
+  (banda `precipitation`) están disponibles ahí directamente. Se reescribió
+  el mecanismo de adquisición para usar Earth Engine en vez de CDS/GES
+  DISC — ver "Revisión 2026-09-21" abajo. Ya **no se necesitan**
+  credenciales de CDS ni de NASA Earthdata Login.
+
+### Revisión 2026-09-21 — adquisición vía Earth Engine en vez de CDS/GES DISC
+
+No cambia la metodología (siguen siendo `cp`+`lsp` de ERA5 puro e IMERG V07
+exactamente como especifica PASO 3.1/3.2); cambia solo el mecanismo de
+adquisición:
+
+- `src/data_extraction/era5_cds.py` (API de CDS) fue **eliminado** y
+  reemplazado por `src/data_extraction/era5_ee.py` (Earth Engine),
+  documentado en `docs/DATA_SOURCES.md`.
+- `src/data_extraction/imerg.py` (antes: HTTP directo a NASA GES DISC +
+  `h5py`) fue **reescrito en el mismo archivo** para usar Earth Engine.
+- Efecto colateral positivo: se encontró y corrigió un bug en la
+  exportación de Oya con `--region` (introducida en PASO 3, 2026-09-11):
+  el `fileNamePrefix` incluía "/" pensando que crearía subcarpetas en
+  Drive, pero Drive trata "/" como carácter literal del nombre, no como
+  separador de ruta, lo cual rompía la reconstrucción de la ruta local al
+  sincronizar. Corregido usando nombres planos + un parser dedicado
+  (`drive.parse_prefixed_export_name`), reutilizado también por
+  `era5_ee.py`/`imerg.py`.
+- `requirements.txt`, `src/utils/config.py` y `env.example` ya no
+  mencionan `cdsapi`, `h5py`, `netCDF4`, `CDSAPI_URL`, `CDSAPI_KEY`,
+  `EARTHDATA_TOKEN`, `EARTHDATA_USERNAME`, `EARTHDATA_PASSWORD` — nada del
+  código actual los usa.
 - **OQ-4 — Umbral de "historial suficiente" para `ν0` empírico.** Se fija
   provisionalmente en ≥10 años de datos horarios válidos por región (§1.3).
   Es una regla operativa, no un valor de ningún paper — debe revisarse

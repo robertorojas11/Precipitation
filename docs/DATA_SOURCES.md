@@ -61,31 +61,53 @@ scaling geographic coverage later is configuration, not a pipeline rewrite
 
 ## Ground-truth cascade and ERA5 pure inputs
 
+**Revision 2026-09-21: acquisition backend switched to Google Earth
+Engine.** The first version of this section (PASO 3, 2026-09-11) specified
+the Copernicus CDS API for ERA5 and direct NASA GES DISC HTTP access for
+IMERG, gated on CDS/Earthdata credentials that were not available. The
+project owner has Earth Engine + Drive service-account credentials instead
+(`auth/service_account.json`, already used by `export_oya.py`). Checked
+against the live Earth Engine Data Catalog (2026-09-21):
+
+- `ECMWF/ERA5/HOURLY` (the **pure** ERA5 product, not ERA5-Land) exposes
+  `mean_convective_precipitation_rate` and
+  `mean_large_scale_precipitation_rate` directly — exactly the two P1
+  variables, at ERA5's native ~0.25° grid. No CDS credential needed.
+- `NASA/GPM_L3/IMERG_V07` exposes the calibrated `precipitation` band
+  (mm/hr, Final-Run-equivalent), half-hourly. No Earthdata Login token
+  needed.
+
+Both are now acquired the same way `export_oya.py` already acquires Oya:
+Earth Engine batch export-to-Drive, synced locally via
+`src.data_extraction.drive.sync_prefixed`. The physical variables and their
+role in the pipeline are unchanged from the original decision — only the
+backend differs. `docs/decisions/0002-implementacion-v2.md` records this as
+a revision note under PASO 3.1/3.2, not a new decision.
+
 ### Input: pure ERA5 cp + lsp
 
-`src/data_extraction/era5_cds.py` acquires `convective_precipitation` (cp)
-and `large_scale_precipitation` (lsp) from the Copernicus CDS
-(`reanalysis-era5-single-levels`), hourly, on ERA5's native ~0.25° grid,
-scoped to one named region (`src.data_preprocessing.regions`). This is a new
-module: no ERA5-pure (CDS-based) acquisition code previously existed in
-`src/` — the pre-existing `raw/era5_pl` archive (pure ERA5 500/850 hPa
-channels documented in `docs/stages/data-and-resources.md`) was acquired by
-an external, unversioned process. `era5_cds.py` fills that gap for cp/lsp
-specifically and is the acquisition path going forward for this input.
-Delivery: one NetCDF per `(variable, month, region)` under
-`$V2_RAW_DATA_DIR/era5_cds/<region>/<variable>/`, with a hashed manifest.
-Requires `CDSAPI_URL` + `CDSAPI_KEY` (or `~/.cdsapirc`); fails explicitly,
-never falls back to synthetic data (§ Credentials below).
+`src/data_extraction/era5_ee.py` (replaces the removed `era5_cds.py`)
+pulls `ECMWF/ERA5/HOURLY`, converts the rate bands to accumulated mm per
+hour (`rate[kg/m^2/s] * 3600`), and exports one 48-band GeoTIFF per
+`(region, day)` (24 hours × 2 variables) to Drive, scoped to one named
+region (`src.data_preprocessing.regions`). Delivery:
+`$V2_RAW_DATA_DIR/era5_ee/<region>/<year>/<month>/era5_<region>_<date>.tif`,
+with a hashed manifest recording the band layout. Fails explicitly if
+Earth Engine initialization fails; never falls back to synthetic data.
 
 ### Primary target: IMERG V07 Final Run
 
-`src/data_extraction/imerg.py` downloads the half-hourly `GPM_3IMERGHH.07`
-product from NASA GES DISC, subsets it to a region bounding box, and
-averages it to hourly (RainShift, P2 M203) to match ERA5's temporal
-resolution. Delivery: one NetCDF/day under
-`$V2_RAW_DATA_DIR/imerg/<region>/`, with a hashed manifest. Requires
-`EARTHDATA_TOKEN` (or username/password, or `~/.netrc`); same
-fail-explicitly policy as ERA5.
+`src/data_extraction/imerg.py` (rewritten in place) pulls
+`NASA/GPM_L3/IMERG_V07`'s half-hourly `precipitation` band and exports one
+48-band GeoTIFF per `(region, day)` to Drive. `halfhourly_to_hourly()`
+still reduces the 48 half-hourly bands to 24 hourly means (RainShift, P2
+M203) — now applied to the locally downloaded GeoTIFF instead of remote
+HDF5 granules. Delivery:
+`$V2_RAW_DATA_DIR/imerg/<region>/<year>/<month>/imerg_<region>_<date>.tif`,
+with a hashed manifest. Recent granules may be marked "provisional" by the
+provider (permanent V07 products end 2025-09-30 ahead of a V08
+transition) — acceptable for training data, but worth knowing if a result
+looks like it shifted after a later re-run once NASA finalizes a granule.
 
 ### Secondary/refinement target: Oya
 
@@ -95,7 +117,13 @@ as the secondary, refinement-stage target, now region-scoped: passing
 to `$V2_RAW_DATA_DIR/oya/<region>/` instead of the legacy
 `$RAW_DATA_DIR/v2_clean/oya/` path (omitting `--region` reproduces the
 legacy unscoped export unchanged, so `pipeline.py`'s existing `acquire`
-stage for the archived deterministic pipeline is unaffected).
+stage for the archived deterministic pipeline is unaffected). The
+region-scoped export uses a flat Drive filename
+(`oya_<region>_<date>.tif`, no embedded "/") and syncs via the same
+`drive.sync_prefixed` helper as ERA5/IMERG — a bug fix made alongside the
+2026-09-21 revision: Google Drive treats "/" in an export's `fileNamePrefix`
+as a literal character in the file's `name`, not a path separator, so an
+embedded "/" broke local path reconstruction on sync.
 
 **Known limitations of Oya** (documented explicitly, per PASO 3.2, so it is
 never treated as equivalent in quality to IMERG):
@@ -121,13 +149,19 @@ higher-detail refinement). Both options are designed for; which one is used
 for a given training run is a configuration choice, not a hard-coded
 pipeline shape.
 
-### Credentials status (2026-09-11)
+### Credentials status (2026-09-21)
 
-Neither CDS nor Earthdata credentials are available yet (confirmed with the
-project owner). `era5_cds.py` and `imerg.py` are implemented and tested
-(credential-gating, resume, manifest logic — no network calls), but **no
-acquisition has been executed and no data has been downloaded** this round,
-matching the same policy from the reverted attempt #1.
+The project owner has Earth Engine + Drive service-account credentials
+(`auth/service_account.json`), which is now sufficient for both ERA5 and
+IMERG acquisition — no separate CDS API key or NASA Earthdata Login token
+is required (§ revision note above). `era5_ee.py` and `imerg.py` are
+implemented and unit-tested (path construction, manifest round-trips, the
+flat-filename parsing that makes Drive sync correct — no real Earth Engine
+or Drive network calls in tests), but **no acquisition has been executed
+and no data has been downloaded** as of this writing; running
+`python -m src.data_extraction.era5_ee ...` / `python -m
+src.data_extraction.imerg ...` for at least one region is the next concrete
+step toward a real training run.
 
 ## Legacy sources (unchanged)
 

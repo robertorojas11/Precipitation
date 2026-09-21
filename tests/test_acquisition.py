@@ -1,103 +1,73 @@
-"""Acquisition modules: credential gating, resume, manifests -- no network I/O."""
+"""Earth Engine acquisition modules (era5_ee, imerg) and the shared Drive
+sync helper: path construction, manifest round-trips, and the flat-filename
+parsing that makes region-scoped Drive exports resolvable -- no real Earth
+Engine or Drive network calls."""
 
-import unittest
-from datetime import date
+from datetime import datetime
 from pathlib import Path
 import tempfile
+import unittest
+from unittest.mock import patch
 
 import numpy as np
 
-from src.data_extraction import era5_cds, export_oya, imerg
+from src.data_extraction import drive, era5_ee, export_oya, imerg
 from src.data_preprocessing import regions
 from src.utils import provenance
-from src.utils.config import Config
 
 
-class _CredentialGuard(unittest.TestCase):
-    """Clear all acquisition credentials for the duration of a test."""
+class ParsePrefixedExportNameTest(unittest.TestCase):
+    def test_simple_region_name(self):
+        region, date_str, year, month = drive.parse_prefixed_export_name(
+            "era5_mexico_pacifico_2020-01-05.tif", "era5"
+        )
+        self.assertEqual((region, date_str, year, month), ("mexico_pacifico", "2020-01-05", "2020", "01"))
 
-    _KEYS = (
-        "CDSAPI_URL", "CDSAPI_KEY",
-        "EARTHDATA_TOKEN", "EARTHDATA_USERNAME", "EARTHDATA_PASSWORD",
-    )
+    def test_region_name_with_multiple_underscores(self):
+        region, date_str, year, month = drive.parse_prefixed_export_name(
+            "imerg_puerto_rico_caribe_2021-12-31.tif", "imerg"
+        )
+        self.assertEqual(region, "puerto_rico_caribe")
+        self.assertEqual((date_str, year, month), ("2021-12-31", "2021", "12"))
 
-    def setUp(self):
-        self._saved = {k: getattr(Config, k) for k in self._KEYS}
-        for k in self._KEYS:
-            setattr(Config, k, None)
+    def test_wrong_prefix_raises(self):
+        with self.assertRaises(ValueError):
+            drive.parse_prefixed_export_name("oya_mexico_pacifico_2020-01-05.tif", "era5")
 
-    def tearDown(self):
-        for k, v in self._saved.items():
-            setattr(Config, k, v)
-
-
-class Era5CdsTest(_CredentialGuard):
-    def test_missing_credentials_raise_with_variable_name(self):
-        with self.assertRaises(era5_cds.MissingCredentialsError) as ctx:
-            era5_cds.resolve_cds_credentials()
-        self.assertIn("CDSAPI_KEY", str(ctx.exception))
-
-    def test_month_iteration_is_inclusive(self):
-        months = list(era5_cds._iter_months(era5_cds.Month(2001, 11), era5_cds.Month(2002, 2)))
-        self.assertEqual([str(m) for m in months], ["2001-11", "2001-12", "2002-01", "2002-02"])
-
-    def test_cds_area_is_north_west_south_east(self):
-        region = regions.get_region("mexico_pacifico")
-        area = era5_cds.cds_area(region)
-        self.assertEqual(area, [region.lat_max, region.lon_min, region.lat_min, region.lon_max])
-
-    def test_download_writes_files_and_manifest_and_resumes(self):
-        Config.CDSAPI_URL, Config.CDSAPI_KEY = "https://example/api", "key"
-        calls = []
-
-        class FakeClient:
-            def retrieve(self, dataset, request, path):
-                calls.append((dataset, request["variable"][0]))
-                Path(path).write_bytes(b"NETCDF-FAKE")
-
-        region = regions.get_region("mexico_pacifico")
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            manifest_path = era5_cds.download_range(
-                era5_cds.Month(2001, 1), era5_cds.Month(2001, 1),
-                region, root=root, client=FakeClient(),
-            )
-            self.assertEqual(len(calls), 2)  # cp + lsp for one month
-            manifest = provenance.load_manifest(manifest_path)
-            self.assertEqual(manifest["kind"], "era5_cds")
-            self.assertEqual(manifest["record_count"], 2)
-            for rec in manifest["records"]:
-                self.assertEqual(len(rec["sha256"]), 64)
-                self.assertTrue((root / rec["path"]).exists())
-
-            # second run: files exist -> no new retrieve calls
-            calls.clear()
-            era5_cds.download_range(
-                era5_cds.Month(2001, 1), era5_cds.Month(2001, 1),
-                region, root=root, client=FakeClient(),
-            )
-            self.assertEqual(calls, [])
-
-    def test_dry_run_still_checks_credentials(self):
-        with self.assertRaises(era5_cds.MissingCredentialsError):
-            era5_cds.download_range(
-                era5_cds.Month(2001, 1), era5_cds.Month(2001, 1),
-                regions.get_region("mexico_pacifico"), root=Path("/tmp/never"), dry_run=True,
-            )
+    def test_missing_region_segment_raises(self):
+        with self.assertRaises(ValueError):
+            drive.parse_prefixed_export_name("era5_2020-01-05.tif", "era5")
 
 
-class ImergTest(_CredentialGuard):
-    def test_missing_credentials_raise_with_variable_name(self):
-        with self.assertRaises(imerg.MissingCredentialsError) as ctx:
-            imerg.resolve_earthdata_auth()
-        self.assertIn("EARTHDATA_TOKEN", str(ctx.exception))
+class Era5EePathAndUnitsTest(unittest.TestCase):
+    def test_rate_to_hourly_mm(self):
+        # 1 kg/m^2/s over one hour = 3600 mm accumulated.
+        self.assertAlmostEqual(era5_ee.rate_to_hourly_mm(1.0), 3600.0)
+        self.assertAlmostEqual(era5_ee.rate_to_hourly_mm(0.0), 0.0)
 
-    def test_granule_urls_are_48_half_hourly_slots(self):
-        urls = imerg.granule_urls(date(2020, 6, 1))
-        self.assertEqual(len(urls), imerg.SLOTS_PER_DAY)
-        self.assertIn("2020/153/", urls[0])  # day-of-year 153
-        self.assertIn("-S000000-E002959.0000.", urls[0])
-        self.assertIn("-S233000-E235959.1410.", urls[-1])
+    def test_local_target_matches_drive_export_naming(self):
+        date = datetime(2020, 3, 5)
+        local = era5_ee._local_target(Path("/root"), "mexico_pacifico", date)
+        self.assertEqual(local, Path("/root/era5_ee/mexico_pacifico/2020/03/era5_mexico_pacifico_2020-03-05.tif"))
+        # Round-trip: the flat Drive filename this module would submit,
+        # parsed back, must reconstruct the same region/year/month.
+        drive_name = f"era5_mexico_pacifico_{date:%Y-%m-%d}.tif"
+        region, date_str, year, month = drive.parse_prefixed_export_name(drive_name, "era5")
+        self.assertEqual(
+            local,
+            Path("/root") / "era5_ee" / region / year / month / drive_name,
+        )
+
+    def test_download_range_rejects_unknown_region(self):
+        with self.assertRaises(KeyError):
+            era5_ee.download_range(2020, 2020, "atlantis")
+
+
+class ImergPathAndReductionTest(unittest.TestCase):
+    def test_local_target_matches_drive_export_naming(self):
+        date = datetime(2021, 6, 15)
+        local = imerg._local_target(Path("/root"), "puerto_rico_caribe", date)
+        self.assertEqual(local, Path("/root/imerg/puerto_rico_caribe/2021/06/imerg_puerto_rico_caribe_2021-06-15.tif"))
 
     def test_halfhourly_to_hourly_averages_pairs(self):
         slots = np.zeros((48, 2, 2), dtype=np.float32)
@@ -112,68 +82,94 @@ class ImergTest(_CredentialGuard):
         with self.assertRaises(ValueError):
             imerg.halfhourly_to_hourly(np.zeros((47, 2, 2)))
 
-    def test_download_range_mocked_end_to_end(self):
-        Config.EARTHDATA_TOKEN = "tok"
-        region = regions.get_region("mexico_pacifico")
-        lats = np.linspace(region.lat_min, region.lat_max, 8)
-        lons = np.linspace(region.lon_min, region.lon_max, 10)
+    def test_read_daily_geotiff_hourly_roundtrip(self):
+        import rasterio
+        from rasterio.transform import from_origin
 
-        def fake_download(session, url, **kw):
-            return b"x"
-
-        def fake_read(content, region_):
-            return np.full((lats.size, lons.size), 0.5, np.float32), lats, lons
-
-        orig_dl, orig_rd = imerg._download_with_retry, imerg._read_granule
-        imerg._download_with_retry = fake_download
-        imerg._read_granule = fake_read
-        try:
-            with tempfile.TemporaryDirectory() as tmp:
-                root = Path(tmp)
-                manifest_path = imerg.download_range(
-                    date(2021, 1, 1), date(2021, 1, 2),
-                    region, root=root, session=object(),
-                )
-                manifest = provenance.load_manifest(manifest_path)
-                self.assertEqual(manifest["record_count"], 2)  # two days
-                for rec in manifest["records"]:
-                    path = root / rec["path"]
-                    self.assertTrue(path.exists())
-                    self.assertEqual(len(rec["sha256"]), 64)
-        finally:
-            imerg._download_with_retry, imerg._read_granule = orig_dl, orig_rd
-
-
-class OyaRegionScopingTest(unittest.TestCase):
-    def test_unscoped_path_matches_legacy_layout(self):
-        from datetime import datetime
-
-        path = export_oya._local_target(Path("/root"), datetime(2020, 3, 5), None)
-        self.assertEqual(path, Path("/root/oya/2020/03/oya_2020-03-05.tif"))
-
-    def test_region_scoped_path_is_namespaced(self):
-        from datetime import datetime
-
-        path = export_oya._local_target(Path("/root"), datetime(2020, 3, 5), "puerto_rico_caribe")
-        self.assertEqual(
-            path,
-            Path("/root/oya/puerto_rico_caribe/2020/03/oya_puerto_rico_caribe_2020-03-05.tif"),
-        )
-
-
-class ProvenanceTest(unittest.TestCase):
-    def test_write_and_load_manifest_roundtrip(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "manifest.json"
-            written = provenance.write_manifest(
-                path, kind="test", records=[{"path": "a", "sha256": "x" * 64}]
-            )
-            loaded = provenance.load_manifest(path)
-            self.assertEqual(loaded["manifest_sha256"], written["manifest_sha256"])
-            self.assertEqual(loaded["record_count"], 1)
+            path = Path(tmp) / "imerg_test.tif"
+            data = np.zeros((48, 3, 3), dtype=np.float32)
+            data[0] = 1.0
+            data[1] = 3.0  # hour 0 -> mean 2.0
+            with rasterio.open(
+                path, "w", driver="GTiff", height=3, width=3, count=48,
+                dtype="float32", crs="EPSG:4326", transform=from_origin(0, 0, 0.1, 0.1),
+            ) as dst:
+                dst.write(data)
+            hourly = imerg.read_daily_geotiff_hourly(path)
+            self.assertEqual(hourly.shape, (24, 3, 3))
+            np.testing.assert_allclose(hourly[0], 2.0)
 
-    def test_load_missing_manifest_returns_none(self):
-        self.assertIsNone(provenance.load_manifest("/tmp/does-not-exist-manifest.json"))
+    def test_download_range_rejects_unknown_region(self):
+        with self.assertRaises(KeyError):
+            imerg.download_range(2020, 2020, "atlantis")
+
+
+class DownloadRangeEndToEndTest(unittest.TestCase):
+    """Exercise download_range()'s resume/manifest logic with injected
+    submit/sync callables and a mocked Earth Engine initialize()."""
+
+    def test_era5_resumes_and_writes_manifest(self):
+        region = "mexico_pacifico"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = era5_ee._local_target(root, region, datetime(2020, 1, 1))
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"fake-geotiff")
+
+            submit_calls = []
+            with patch.object(era5_ee.earth_engine, "initialize", return_value=None):
+                manifest_path = era5_ee.download_range(
+                    2020, 2020, region, root=root,
+                    submit_in_batches=lambda fns: submit_calls.append(len(fns)),
+                    sync=lambda: 0,
+                )
+            manifest = provenance.load_manifest(manifest_path)
+            self.assertEqual(manifest["kind"], "era5_ee")
+            # Only 2020-01-01 is pre-existing; the other 365 days of 2020
+            # should have been queued for submission.
+            self.assertEqual(submit_calls[0], 30)  # January minus the 1 existing day
+            self.assertTrue(any(rec["day"] == "2020-01-01" for rec in manifest["records"]))
+
+    def test_imerg_skips_submission_when_month_already_complete(self):
+        import calendar
+
+        region = "mexico_atlantico_golfo"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for day in range(1, calendar.monthrange(2020, 1)[1] + 1):
+                target = imerg._local_target(root, region, datetime(2020, 1, day))
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(b"fake-geotiff")
+
+            submit_calls = []
+            with patch.object(imerg.earth_engine, "initialize", return_value=None):
+                imerg.download_range(
+                    2020, 2020, region, root=root,
+                    submit_in_batches=lambda fns: submit_calls.append(len(fns)),
+                    sync=lambda: 0,
+                )
+            # January is fully present -> no submission for it; only later
+            # months (Feb..Dec) get queued.
+            self.assertEqual(len(submit_calls), 11)
+
+
+class OyaRegionScopedExportNamingTest(unittest.TestCase):
+    """The region-scoped Oya export must use a flat Drive filename (PASO 3
+    fix, 2026-09-21) so drive.sync_prefixed can parse it back correctly."""
+
+    def test_local_target_and_flat_drive_name_round_trip(self):
+        date = datetime(2020, 3, 5)
+        region = "mexico_pacifico"
+        local = export_oya._local_target(Path("/root"), date, region)
+        drive_name = f"oya_{region}_{date:%Y-%m-%d}.tif"
+        parsed_region, date_str, year, month = drive.parse_prefixed_export_name(drive_name, "oya")
+        self.assertEqual(local, Path("/root") / "oya" / parsed_region / year / month / drive_name)
+
+    def test_unscoped_export_path_unaffected(self):
+        date = datetime(2020, 3, 5)
+        local = export_oya._local_target(Path("/root"), date, None)
+        self.assertEqual(local, Path("/root/oya/2020/03/oya_2020-03-05.tif"))
 
 
 if __name__ == "__main__":

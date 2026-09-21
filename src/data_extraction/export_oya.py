@@ -65,12 +65,16 @@ def _submit(date: datetime, region_name: str | None = None):
         geometry
     ).unmask(-9999.0)
     # Region-scoped exports (PASO 3.2, secondary/refinement target of the
-    # ERA5->IMERG->Oya cascade) use a v2_generative/ prefix, distinct from
-    # the legacy unscoped v2_clean/oya/ path the archived deterministic
-    # pipeline still reads.
+    # ERA5->IMERG->Oya cascade) use a flat Drive filename (no "/" in the
+    # prefix): Google Drive treats "/" as a literal character in a file's
+    # `name`, not a path separator, so an embedded "/" here would silently
+    # break drive.sync_prefixed()'s local-path reconstruction. The region and
+    # date are still fully recoverable from the flat name (sync_prefixed
+    # parses them back out), distinct from the legacy unscoped
+    # v2_clean/oya/ path the archived deterministic pipeline still reads.
     if region_name is not None:
         description = f"v2_generative_oya_{region_name}_{date_str}"
-        prefix = f"v2_generative/oya/{region_name}/{date.year}/{date.month:02d}/oya_{region_name}_{date_str}"
+        prefix = f"oya_{region_name}_{date_str}"
     else:
         description = f"v2_clean_oya_{date_str}"
         prefix = f"v2_clean/oya/{date.year}/{date.month:02d}/oya_{date_str}"
@@ -126,7 +130,10 @@ def export_date_range(start_year: int, end_year: int, region_name: str | None = 
                 month.strftime("%Y-%m"),
             )
             _submit_in_batches(functions)
-            downloaded = drive.sync_oya(destination_root)
+            if region_name is not None:
+                downloaded = drive.sync_prefixed(destination_root, name_prefix="oya", subdir="oya")
+            else:
+                downloaded = drive.sync_oya(destination_root)
             logger.info("Downloaded %d Oya files for %s", downloaded, month.strftime("%Y-%m"))
         else:
             logger.info("Oya month already complete: %s", month.strftime("%Y-%m"))

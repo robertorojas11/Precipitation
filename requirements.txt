@@ -1,12 +1,9 @@
-cdsapi
 earthengine-api
 geopandas
 google-api-python-client
 google-auth-httplib2
-h5py
 httplib2
 matplotlib
-netCDF4
 numpy
 pandas
 python-dateutil

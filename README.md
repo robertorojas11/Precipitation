@@ -40,11 +40,12 @@ python -m unittest discover -s tests
 
 ## Credentials
 
-The new acquisition modules need credentials and fail with an explicit message
-if they are missing (see `env.example`):
-
-- Copernicus CDS (`CDSAPI_URL`, `CDSAPI_KEY`) — pure ERA5 cp + lsp
-- NASA Earthdata (`EARTHDATA_TOKEN`) — IMERG V07
+ERA5 cp+lsp and IMERG V07 acquisition (`src/data_extraction/era5_ee.py`,
+`imerg.py`) run entirely on Google Earth Engine + Drive, using the same
+service-account credentials `export_oya.py` already needs
+(`GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_DRIVE_CREDENTIALS`, see
+`env.example`). No separate CDS API key or NASA Earthdata Login token is
+required (revision 2026-09-21, `docs/DATA_SOURCES.md`).
 
 Data and checkpoints under `/mnt/data-r2/RobertoRojas/downscaling/` are external
 artifacts and are not deleted by repository maintenance.

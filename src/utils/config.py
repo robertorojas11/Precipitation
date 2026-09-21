@@ -29,15 +29,6 @@ class Config:
     ATLANTICO_SHP_PATH = os.getenv("ATLANTICO_SHP_PATH")
     PACIFICO_SHP_PATH = os.getenv("PACIFICO_SHP_PATH")
 
-    # Copernicus CDS (pure ERA5 cp/lsp acquisition)
-    CDSAPI_URL = os.getenv("CDSAPI_URL")
-    CDSAPI_KEY = os.getenv("CDSAPI_KEY")
-
-    # NASA Earthdata (IMERG acquisition)
-    EARTHDATA_TOKEN = os.getenv("EARTHDATA_TOKEN")
-    EARTHDATA_USERNAME = os.getenv("EARTHDATA_USERNAME")
-    EARTHDATA_PASSWORD = os.getenv("EARTHDATA_PASSWORD")
-    
     # GEE Export Configuration
     GEE_DRIVE_FOLDER = os.getenv("GEE_DRIVE_FOLDER", "Precipitation_Exports")
     GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "precipitation-dowscaling-exports")

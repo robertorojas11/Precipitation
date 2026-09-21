@@ -61,8 +61,9 @@ requires Oya as a final target rather than a continuity/comparison source.
 `mexico_atlantico_golfo`, `puerto_rico_caribe`. Each is a bounding box
 intersected with a tropical-cyclone basin polygon
 (`ATLANTICO_SHP_PATH`/`PACIFICO_SHP_PATH`). Used uniformly by acquisition
-(`era5_cds.py`, `imerg.py`, region-scoped `export_oya.py`) and, going
-forward, by preprocessing/training/evaluation. Adding a region is a registry
+(`era5_ee.py`, `imerg.py`, region-scoped `export_oya.py` — all three via
+Google Earth Engine, revision 2026-09-21) and, going forward, by
+preprocessing/training/evaluation. Adding a region is a registry
 entry, not a pipeline rewrite (mirrors RainShift's `A1 ⊂ A2 ⊂ A3 ⊂ A4`
 mechanism).
 
@@ -78,7 +79,7 @@ requirement doesn't apply to this project's scope).
 | Block | Item | Status | Where |
 |---|---|---|---|
 | B.1 | Region objects, disjoint train/eval sets | DONE | `src/data_preprocessing/regions.py` |
-| B.1 | LR ERA5 channels (cp+lsp) + HR invariants | PARTIAL | `era5_cds.py` acquires cp+lsp; HR invariants (land-sea mask, orography) not yet wired into a per-region prepared dataset |
+| B.1 | LR ERA5 channels (cp+lsp) + HR invariants | PARTIAL | `era5_ee.py` acquires cp+lsp via Earth Engine; HR invariants (land-sea mask, orography) not yet wired into a per-region prepared dataset |
 | B.1 | Target: IMERG V07, hourly | DONE (acquisition) / PLANNED (dataset build) | `src/data_extraction/imerg.py` |
 | B.2 | Clip ERA5 by IMERG min/max, log transform, pooled-variance normalization | PLANNED | not yet ported to the new region-scoped dataset builder |
 | B.4 | Hierarchical region-union training scenarios (A1–A4) | DEFERRED | mechanism supported by the region registry; not exercised with a multi-region union yet (single-region start, per 0001/0002) |
