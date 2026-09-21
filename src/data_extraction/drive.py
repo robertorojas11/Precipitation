@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload
 
+from src.data_preprocessing import regions as region_defs
 from src.utils.config import Config
 from src.utils.retries import execute_with_retry, retry_on_network_error
 
 
 DRIVE_SCOPE = ["https://www.googleapis.com/auth/drive"]
+logger = Config.get_logger()
 
 
 def _service():
@@ -38,6 +42,30 @@ def _folder_id(service, folder_name: str) -> str:
     if not folders:
         raise FileNotFoundError(f"Google Drive folder not found: {folder_name}")
     return folders[0]["id"]
+
+
+def _try_trash(service, file_id: str, name: str) -> None:
+    """Best-effort cleanup: move a synced export to the Drive trash.
+
+    Exports authenticated via personal Google OAuth (``earth_engine.py``'s
+    preferred path) land in the *user's* Drive, while the sync step here
+    authenticates as the service account (``GOOGLE_DRIVE_CREDENTIALS``) --
+    two different identities. If the export folder is only shared with the
+    service account as a Viewer (read access, enough to list and download),
+    trashing raises HTTP 403 even though the download already succeeded.
+    That must not lose the fact that the file was retrieved, so this is
+    swallowed with a warning rather than propagated -- an untrashed export
+    left behind in Drive is a nuisance, not a data-loss risk.
+    """
+    try:
+        execute_with_retry(service.files().update(fileId=file_id, body={"trashed": True}))
+    except HttpError as error:
+        logger.warning(
+            "Could not trash Drive export %r (file_id=%s): %s. Downloaded copy is safe; "
+            "the file remains in Drive -- share the export folder with the service "
+            "account as Editor (not just Viewer) to enable automatic cleanup.",
+            name, file_id, error,
+        )
 
 
 @retry_on_network_error()
@@ -77,10 +105,11 @@ def sync_oya(destination_root: Path | str) -> int:
         if not destination.exists():
             _download(service, item["id"], destination)
             downloaded += 1
-        execute_with_retry(
-            service.files().update(fileId=item["id"], body={"trashed": True})
-        )
+        _try_trash(service, item["id"], name)
     return downloaded
+
+
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def parse_prefixed_export_name(name: str, name_prefix: str) -> tuple[str, str, str, str]:
@@ -93,6 +122,14 @@ def parse_prefixed_export_name(name: str, name_prefix: str) -> tuple[str, str, s
     between the prefix and the date (region names may themselves contain
     underscores, e.g. ``mexico_pacifico``, so a plain ``str.split("_")`` is
     not enough).
+
+    The Drive API's ``name contains '<name_prefix>_'`` query is a plain
+    substring match with no anchoring, so it also matches an unrelated file
+    like ``era5_pl_2020-01-01.tif`` when ``name_prefix="era5"`` (found in
+    production, 2026-09-21: a legacy/unrelated export sharing the same Drive
+    folder). Requiring the parsed region to be one of this project's
+    registered regions (``src.data_preprocessing.regions``) rejects that
+    kind of accidental collision instead of silently mis-filing it.
     """
     stem = name.removesuffix(".tif")
     head = f"{name_prefix}_"
@@ -102,6 +139,14 @@ def parse_prefixed_export_name(name: str, name_prefix: str) -> tuple[str, str, s
     region_name = stem[len(head): -11]  # strip "<prefix>_" and "_<date>"
     if not region_name:
         raise ValueError(f"{name!r} has no region segment between prefix and date")
+    if not _DATE_RE.match(date_str):
+        raise ValueError(f"{name!r} does not end in a YYYY-MM-DD date")
+    if region_name not in region_defs.list_regions():
+        raise ValueError(
+            f"{name!r} parsed to unrecognized region {region_name!r} -- likely an "
+            "unrelated file sharing a Drive folder, not a genuine collision. "
+            f"Known regions: {region_defs.list_regions()}"
+        )
     year, month, _ = date_str.split("-")
     return region_name, date_str, year, month
 
@@ -127,12 +172,14 @@ def sync_prefixed(destination_root: Path | str, *, name_prefix: str, subdir: str
     downloaded = 0
     for item in response.get("files", []):
         name = Path(item["name"]).name
-        region_name, _date_str, year, month = parse_prefixed_export_name(name, name_prefix)
+        try:
+            region_name, _date_str, year, month = parse_prefixed_export_name(name, name_prefix)
+        except ValueError as error:
+            logger.warning("Skipping Drive file %r: %s", name, error)
+            continue
         destination = Path(destination_root) / subdir / region_name / year / month / name
         if not destination.exists():
             _download(service, item["id"], destination)
             downloaded += 1
-        execute_with_retry(
-            service.files().update(fileId=item["id"], body={"trashed": True})
-        )
+        _try_trash(service, item["id"], name)
     return downloaded

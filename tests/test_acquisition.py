@@ -38,6 +38,17 @@ class ParsePrefixedExportNameTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             drive.parse_prefixed_export_name("era5_2020-01-05.tif", "era5")
 
+    def test_unrelated_file_sharing_prefix_substring_is_rejected(self):
+        # Found in production 2026-09-21: an unrelated "era5_pl_*" export in
+        # the same Drive folder also matches a naive "name contains 'era5_'"
+        # search. "pl" is not a registered region, so this must raise.
+        with self.assertRaises(ValueError):
+            drive.parse_prefixed_export_name("era5_pl_2025-12-29.tif", "era5")
+
+    def test_malformed_date_suffix_raises(self):
+        with self.assertRaises(ValueError):
+            drive.parse_prefixed_export_name("era5_mexico_pacifico_not-a-date.tif", "era5")
+
 
 class Era5EePathAndUnitsTest(unittest.TestCase):
     def test_rate_to_hourly_mm(self):
