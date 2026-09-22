@@ -81,6 +81,30 @@ def _download(service, file_id: str, destination: Path) -> None:
             _, complete = downloader.next_chunk()
 
 
+def _list_all(service, query: str) -> list[dict]:
+    """Page through ``files().list()`` and return every match.
+
+    A single ``.list()`` call only returns one page (Drive v3's default page
+    size is 100); without following ``nextPageToken``, any query matching
+    more than a page's worth of files would silently only ever see a subset
+    of them. Found in production, 2026-09-21, once acquisition ran long
+    enough to accumulate hundreds of matching exports in one Drive folder.
+    """
+    items: list[dict] = []
+    page_token = None
+    while True:
+        response = execute_with_retry(
+            service.files().list(
+                q=query, spaces="drive", fields="nextPageToken, files(id,name)",
+                pageSize=1000, pageToken=page_token,
+            )
+        )
+        items.extend(response.get("files", []))
+        page_token = response.get("nextPageToken")
+        if not page_token:
+            return items
+
+
 def sync_oya(destination_root: Path | str) -> int:
     """Download Oya GeoTIFFs and trash Drive copies after successful writes."""
     service = _service()
@@ -89,15 +113,8 @@ def sync_oya(destination_root: Path | str) -> int:
         f"'{parent}' in parents and name contains 'oya_' "
         "and name contains '.tif' and trashed=false"
     )
-    response = execute_with_retry(
-        service.files().list(
-            q=query,
-            spaces="drive",
-            fields="files(id,name)",
-        )
-    )
     downloaded = 0
-    for item in response.get("files", []):
+    for item in _list_all(service, query):
         name = Path(item["name"]).name
         date = name.removesuffix(".tif").split("_")[-1]
         year, month, _ = date.split("-")
@@ -151,7 +168,9 @@ def parse_prefixed_export_name(name: str, name_prefix: str) -> tuple[str, str, s
     return region_name, date_str, year, month
 
 
-def sync_prefixed(destination_root: Path | str, *, name_prefix: str, subdir: str) -> int:
+def sync_prefixed(
+    destination_root: Path | str, *, name_prefix: str, subdir: str, region_name: str | None = None
+) -> int:
     """Download completed Earth Engine exports named
     ``"<name_prefix>_<region>_<YYYY-MM-DD>.tif"`` (flat Drive filename, no
     embedded "/" -- see :func:`parse_prefixed_export_name`), writing each to
@@ -159,25 +178,35 @@ def sync_prefixed(destination_root: Path | str, *, name_prefix: str, subdir: str
     the Drive copy after a successful download. Generalizes :func:`sync_oya`
     for any region-scoped export family (``era5``, ``imerg``, region-scoped
     ``oya``).
+
+    Pass ``region_name`` (recommended) to scope the Drive query to
+    ``"<name_prefix>_<region_name>_"`` instead of just ``"<name_prefix>_"``.
+    Without it, a process syncing one region's exports also lists, downloads
+    (harmlessly re-skipped once local) and attempts to trash every *other*
+    region's exports sharing the same Drive folder and prefix -- found in
+    production, 2026-09-21, running three regions in parallel: each was
+    listing and processing all three regions' files on every sync, tripling
+    Drive API traffic for no benefit (the file still ends up in the right
+    place either way, since the region is parsed from its own name, but the
+    wasted listing/trash-attempt overhead compounds as more files
+    accumulate).
     """
     service = _service()
     parent = _folder_id(service, Config.GEE_DRIVE_FOLDER)
+    name_filter = f"{name_prefix}_{region_name}_" if region_name else f"{name_prefix}_"
     query = (
-        f"'{parent}' in parents and name contains '{name_prefix}_' "
+        f"'{parent}' in parents and name contains '{name_filter}' "
         "and name contains '.tif' and trashed=false"
     )
-    response = execute_with_retry(
-        service.files().list(q=query, spaces="drive", fields="files(id,name)")
-    )
     downloaded = 0
-    for item in response.get("files", []):
+    for item in _list_all(service, query):
         name = Path(item["name"]).name
         try:
-            region_name, _date_str, year, month = parse_prefixed_export_name(name, name_prefix)
+            parsed_region, _date_str, year, month = parse_prefixed_export_name(name, name_prefix)
         except ValueError as error:
             logger.warning("Skipping Drive file %r: %s", name, error)
             continue
-        destination = Path(destination_root) / subdir / region_name / year / month / name
+        destination = Path(destination_root) / subdir / parsed_region / year / month / name
         if not destination.exists():
             _download(service, item["id"], destination)
             downloaded += 1

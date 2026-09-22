@@ -16,6 +16,82 @@ from src.data_preprocessing import regions
 from src.utils import provenance
 
 
+class _FakeRequest:
+    def __init__(self, result):
+        self._result = result
+
+    def execute(self):
+        return self._result
+
+
+class _FakeFilesResource:
+    """Minimal stand-in for ``service.files()`` capturing every ``list()``
+    call's kwargs, so query construction and pagination are testable
+    without a real Drive API."""
+
+    def __init__(self, pages_by_token: dict):
+        self.pages_by_token = pages_by_token
+        self.list_calls: list[dict] = []
+
+    def list(self, **kwargs):
+        self.list_calls.append(kwargs)
+        page = self.pages_by_token[kwargs.get("pageToken")]
+        return _FakeRequest(page)
+
+
+class _FakeService:
+    def __init__(self, files_resource):
+        self._files = files_resource
+
+    def files(self):
+        return self._files
+
+
+class ListAllPaginationTest(unittest.TestCase):
+    def test_follows_next_page_token_until_exhausted(self):
+        files_resource = _FakeFilesResource({
+            None: {"files": [{"id": "a", "name": "a.tif"}], "nextPageToken": "p2"},
+            "p2": {"files": [{"id": "b", "name": "b.tif"}]},
+        })
+        service = _FakeService(files_resource)
+        items = drive._list_all(service, "some query")
+        self.assertEqual([i["id"] for i in items], ["a", "b"])
+        self.assertEqual(len(files_resource.list_calls), 2)
+        self.assertIsNone(files_resource.list_calls[0]["pageToken"])
+        self.assertEqual(files_resource.list_calls[1]["pageToken"], "p2")
+
+    def test_single_page_makes_one_call(self):
+        files_resource = _FakeFilesResource({None: {"files": [{"id": "a", "name": "a.tif"}]}})
+        service = _FakeService(files_resource)
+        items = drive._list_all(service, "some query")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(len(files_resource.list_calls), 1)
+
+
+class SyncPrefixedQueryScopingTest(unittest.TestCase):
+    """sync_prefixed must scope its Drive query to one region when given,
+    to avoid each region's process listing/processing every other region's
+    exports too (found in production, 2026-09-21, running 3 regions in
+    parallel)."""
+
+    def _run_with_fake_service(self, **sync_kwargs):
+        files_resource = _FakeFilesResource({None: {"files": []}})
+        service = _FakeService(files_resource)
+        with patch.object(drive, "_service", return_value=service), \
+             patch.object(drive, "_folder_id", return_value="parent-id"):
+            drive.sync_prefixed(Path("/root"), **sync_kwargs)
+        return files_resource.list_calls[0]["q"]
+
+    def test_query_includes_region_when_given(self):
+        query = self._run_with_fake_service(name_prefix="era5", subdir="era5_ee", region_name="mexico_pacifico")
+        self.assertIn("era5_mexico_pacifico_", query)
+
+    def test_query_is_prefix_only_without_region(self):
+        query = self._run_with_fake_service(name_prefix="era5", subdir="era5_ee")
+        self.assertIn("era5_", query)
+        self.assertNotIn("mexico_pacifico", query)
+
+
 class ParsePrefixedExportNameTest(unittest.TestCase):
     def test_simple_region_name(self):
         region, date_str, year, month = drive.parse_prefixed_export_name(

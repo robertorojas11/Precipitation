@@ -131,7 +131,9 @@ def export_date_range(start_year: int, end_year: int, region_name: str | None = 
             )
             _submit_in_batches(functions)
             if region_name is not None:
-                downloaded = drive.sync_prefixed(destination_root, name_prefix="oya", subdir="oya")
+                downloaded = drive.sync_prefixed(
+                    destination_root, name_prefix="oya", subdir="oya", region_name=region_name
+                )
             else:
                 downloaded = drive.sync_oya(destination_root)
             logger.info("Downloaded %d Oya files for %s", downloaded, month.strftime("%Y-%m"))

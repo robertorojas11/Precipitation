@@ -141,7 +141,7 @@ def download_range(
     if submit_in_batches is None:
         from src.data_extraction.export_oya import _submit_in_batches as submit_in_batches
     if sync is None:
-        sync = lambda: drive.sync_prefixed(root, name_prefix="era5", subdir="era5_ee")
+        sync = lambda: drive.sync_prefixed(root, name_prefix="era5", subdir="era5_ee", region_name=region_name)
 
     month = datetime(start_year, 1, 1)
     final_month = datetime(end_year, 12, 1)
