@@ -68,6 +68,55 @@ class ListAllPaginationTest(unittest.TestCase):
         self.assertEqual(len(files_resource.list_calls), 1)
 
 
+class ResilientSyncTest(unittest.TestCase):
+    """A single file's download/trash failure must not crash the whole
+    sync -- found in production, 2026-09-23: a transient read timeout on
+    the trash step (not an HttpError) propagated past the old narrow
+    ``except HttpError`` and killed an otherwise-healthy multi-day
+    acquisition process."""
+
+    def test_try_trash_swallows_non_http_exceptions(self):
+        service = object()
+        with patch.object(drive, "execute_with_retry", side_effect=TimeoutError("read timed out")):
+            drive._try_trash(service, "file-id", "some_file.tif")  # must not raise
+
+    def test_try_download_returns_false_and_does_not_raise_on_failure(self):
+        with patch.object(drive, "_download", side_effect=TimeoutError("read timed out")):
+            ok = drive._try_download(object(), "file-id", Path("/tmp/never-written.tif"), "some_file.tif")
+        self.assertFalse(ok)
+
+    def test_try_download_returns_true_on_success(self):
+        with patch.object(drive, "_download", return_value=None):
+            ok = drive._try_download(object(), "file-id", Path("/tmp/whatever.tif"), "some_file.tif")
+        self.assertTrue(ok)
+
+    def test_sync_prefixed_continues_past_a_failed_download(self):
+        files_resource = _FakeFilesResource({
+            None: {"files": [
+                {"id": "bad", "name": "era5_mexico_pacifico_2020-01-01.tif"},
+                {"id": "good", "name": "era5_mexico_pacifico_2020-01-02.tif"},
+            ]},
+        })
+        service = _FakeService(files_resource)
+
+        def fake_download(svc, file_id, destination, name):
+            if file_id == "bad":
+                return False
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(b"data")
+            return True
+
+        with patch.object(drive, "_service", return_value=service), \
+             patch.object(drive, "_folder_id", return_value="parent-id"), \
+             patch.object(drive, "_try_download", side_effect=fake_download), \
+             patch.object(drive, "_try_trash", return_value=None):
+            with tempfile.TemporaryDirectory() as tmp:
+                downloaded = drive.sync_prefixed(Path(tmp), name_prefix="era5", subdir="era5_ee")
+                self.assertEqual(downloaded, 1)  # only the good one counted
+                self.assertFalse((Path(tmp) / "era5_ee/mexico_pacifico/2020/01/era5_mexico_pacifico_2020-01-01.tif").exists())
+                self.assertTrue((Path(tmp) / "era5_ee/mexico_pacifico/2020/01/era5_mexico_pacifico_2020-01-02.tif").exists())
+
+
 class SyncPrefixedQueryScopingTest(unittest.TestCase):
     """sync_prefixed must scope its Drive query to one region when given,
     to avoid each region's process listing/processing every other region's

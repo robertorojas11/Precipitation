@@ -7,7 +7,6 @@ import re
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload
 
 from src.data_preprocessing import regions as region_defs
@@ -56,10 +55,17 @@ def _try_trash(service, file_id: str, name: str) -> None:
     That must not lose the fact that the file was retrieved, so this is
     swallowed with a warning rather than propagated -- an untrashed export
     left behind in Drive is a nuisance, not a data-loss risk.
+
+    Caught broadly (not just ``HttpError``): found in production,
+    2026-09-23, a transient read timeout (``TimeoutError``, not an
+    ``HttpError``) surfaced here after ``execute_with_retry`` exhausted its
+    8 attempts and killed an otherwise-healthy multi-day acquisition
+    process, losing hours of unrelated progress over one file's cleanup
+    step. Nothing this function does is worth crashing the caller over.
     """
     try:
         execute_with_retry(service.files().update(fileId=file_id, body={"trashed": True}))
-    except HttpError as error:
+    except Exception as error:
         logger.warning(
             "Could not trash Drive export %r (file_id=%s): %s. Downloaded copy is safe; "
             "the file remains in Drive -- share the export folder with the service "
@@ -79,6 +85,29 @@ def _download(service, file_id: str, destination: Path) -> None:
         complete = False
         while not complete:
             _, complete = downloader.next_chunk()
+
+
+def _try_download(service, file_id: str, destination: Path, name: str) -> bool:
+    """Best-effort download: same rationale as :func:`_try_trash`.
+
+    ``_download`` is already wrapped in ``@retry_on_network_error()``, so by
+    the time an exception reaches here every transient retry has already
+    been exhausted -- any further failure (e.g. a sustained read timeout)
+    should be logged and skipped, not allowed to crash a multi-day sync
+    over one file. The file simply stays missing locally and is retried on
+    the next ``sync()`` pass, since it still matches the query
+    (``trashed=false``, and trashing this project's own copy never
+    succeeds anyway -- see :func:`_try_trash`).
+    """
+    try:
+        _download(service, file_id, destination)
+        return True
+    except Exception as error:
+        logger.warning(
+            "Could not download Drive export %r (file_id=%s): %s. Will retry on the "
+            "next sync.", name, file_id, error,
+        )
+        return False
 
 
 def _list_all(service, query: str) -> list[dict]:
@@ -119,10 +148,11 @@ def sync_oya(destination_root: Path | str) -> int:
         date = name.removesuffix(".tif").split("_")[-1]
         year, month, _ = date.split("-")
         destination = Path(destination_root) / "oya" / year / month / name
-        if not destination.exists():
-            _download(service, item["id"], destination)
+        if destination.exists():
+            _try_trash(service, item["id"], name)
+        elif _try_download(service, item["id"], destination, name):
             downloaded += 1
-        _try_trash(service, item["id"], name)
+            _try_trash(service, item["id"], name)
     return downloaded
 
 
@@ -207,8 +237,9 @@ def sync_prefixed(
             logger.warning("Skipping Drive file %r: %s", name, error)
             continue
         destination = Path(destination_root) / subdir / parsed_region / year / month / name
-        if not destination.exists():
-            _download(service, item["id"], destination)
+        if destination.exists():
+            _try_trash(service, item["id"], name)
+        elif _try_download(service, item["id"], destination, name):
             downloaded += 1
-        _try_trash(service, item["id"], name)
+            _try_trash(service, item["id"], name)
     return downloaded
