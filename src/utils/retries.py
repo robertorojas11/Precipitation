@@ -13,6 +13,20 @@ from src.utils.config import Config
 
 logger = Config.get_logger()
 
+# Found in production, 2026-09-24: two multi-day acquisition processes hung
+# indefinitely (no new log line, no exception, no progress for 3+ days,
+# unresponsive to SIGTERM) inside ee.data.getTaskStatus() -- a blocking
+# socket read with no explicit timeout anywhere in the earthengine-api /
+# httplib2 call chain, so a dropped connection with no RST just blocks
+# forever instead of raising. Without an exception, retry_on_network_error
+# never gets a chance to retry or eventually give up, and the process looks
+# alive in `ps` while doing nothing. A global default socket timeout makes
+# any such blocking call raise socket.timeout instead (already in
+# DEFAULT_RETRY_EXCEPTIONS below), so it gets retried and, if still stuck,
+# eventually raises and lets the process crash and be restarted -- a stuck
+# process should fail loudly, not hang silently forever.
+socket.setdefaulttimeout(120)
+
 # Standard transient network and API exceptions to retry on
 DEFAULT_RETRY_EXCEPTIONS = (
     socket.gaierror,
