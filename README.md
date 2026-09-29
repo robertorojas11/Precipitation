@@ -16,6 +16,7 @@ geographic-generalization framework.
 - Data sources (authoritative): [docs/DATA_SOURCES.md](docs/DATA_SOURCES.md)
 - Evaluation protocol: [docs/EVALUATION_PROTOCOL.md](docs/EVALUATION_PROTOCOL.md)
 - η-learning notes (`ν0` sourcing and caveats): [docs/ETA_LEARNING_NOTES.md](docs/ETA_LEARNING_NOTES.md)
+- v2-generative stage documentation: [docs/stages_v2/README.md](docs/stages_v2/README.md)
 - Stage documentation: [docs/stages/README.md](docs/stages/README.md)
 
 ## Project history

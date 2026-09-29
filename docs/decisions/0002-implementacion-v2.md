@@ -311,6 +311,17 @@ adquisición:
   definir con el equipo de dominio; P1/spateGAN-ERA5 usa 25 mm/h como umbral
   de advertencia severa (referencia de partida, no un valor ya validado
   para nuestras regiones).
+- **OQ-6 — Split train/val/test por año (etapa de build/prepare, 2026-09-29).**
+  Fijado provisionalmente como entrenamiento 2010–2019, validación 2020–2021,
+  prueba 2022–2023
+  (`src/data_preprocessing/build_hourly_dataset.py::{TRAIN,VAL,TEST}_YEARS`).
+  Es una decisión operativa del proyecto, no un valor de ningún paper —
+  revisar una vez se conozca la calidad/cobertura real de IMERG por región
+  (p.ej. si el corte "provisional"/"permanent" de IMERG cerca de 2025
+  termina restringiendo el rango utilizable). Aplicado igual a las 3
+  regiones; que `puerto_rico_caribe` nunca se use para entrenar es una
+  decisión de la etapa de entrenamiento (via su campo `role` en
+  `regions.py`), no de esta etapa de build.
 
 ## Git checkpoint
 
