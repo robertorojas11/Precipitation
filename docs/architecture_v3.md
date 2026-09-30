@@ -83,6 +83,7 @@ requirement doesn't apply to this project's scope).
 | B.1 | Target: IMERG V07, hourly | DONE (acquisition + aligned build) | `src/data_extraction/imerg.py`, `src/data_preprocessing/build_hourly_dataset.py` |
 | — | Acquisition executed at scale: 30,678 files (3 regions × [ERA5, IMERG] × 5,113 days, 2010-2023) | DONE | `docs/stages_v2/01-acquire.md` |
 | — | Build/alignment: per-region canonical grid, ERA5→IMERG-grid interpolation, masks | DONE | `docs/stages_v2/02-build.md`, `src/data_preprocessing/build_hourly_dataset.py` |
+| — | Raw/processed integrity validation gates | DONE | `docs/stages_v2/03-validate.md`, `src/data_preprocessing/validate_hourly_dataset.py` |
 | B.2 | Clip ERA5 by IMERG min/max, log transform, pooled-variance normalization | PLANNED | Prepare stage (`docs/stages_v2/README.md` stage 4), not yet implemented |
 | B.4 | Hierarchical region-union training scenarios (A1–A4) | DEFERRED | mechanism supported by the region registry; not exercised with a multi-region union yet (single-region start, per 0001/0002) |
 | B.5 | CRPS (Eq. 1), percentile-MAE (Eq. 2), FSS/meFSS, RAPSD, rank histogram, eccentricity (experimental) | DONE | `src/evaluation/probabilistic_metrics.py` |
