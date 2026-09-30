@@ -19,7 +19,7 @@ implemented; earlier stages are complete, later ones are listed here as
 | 1 | [Acquisition](01-acquire.md) | DONE | Per-region, per-day ERA5 (cp+lsp) and IMERG GeoTIFFs via Google Earth Engine |
 | 2 | [Build / alignment](02-build.md) | DONE | Aligned, masked, versioned hourly NPZ samples per region/day |
 | 3 | [Validation gates](03-validate.md) | DONE | Read-only raw/processed integrity audits; acceptance gate before normalization |
-| 4 | Prepare (splits + normalization) | PLANNED | Train-only normalization statistics, final training tensors, manifest |
+| 4 | [Prepare (normalization)](04-prepare.md) | DONE | Train-only pooled normalization statistics (RainShift M216-M219), final training tensors, per-region manifest |
 | 5 | Validate prepared | PLANNED | Final authorization to train |
 | 6 | Training | PLANNED | Checkpoints for the deterministic baseline, Candidate A (GAN), and Candidate B (regression + residual diffusion), with/without η-learning |
 | 7 | Evaluation | PLANNED | CRPS/FSS/percentile-MAE/RMSE-SSIM scores, geographic-generalization (zero-shot Puerto Rico/Caribe) results, cross-model comparison |
