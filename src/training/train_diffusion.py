@@ -251,20 +251,23 @@ def _load_stage1(checkpoint_path: str, device: torch.device) -> RegressionUNet:
     return model
 
 
-def _build_denoiser(base_width: int, device: torch.device) -> EDMPrecond:
-    from src.models.diffusion_residual import SimpleNoiseConditionedUNet
-
+def _denoiser_raw_network_config(base_width: int) -> RegressionStageConfig:
     # SimpleNoiseConditionedUNet's `in_channels` must count EDMPrecond's
     # *entire* network_input -- the scaled noisy residual (1 channel) plus
     # the conditioning tensor -- not the conditioning tensor alone (it adds
     # its own +1 internally only for the noise-level embedding channel).
-    raw = SimpleNoiseConditionedUNet(
-        RegressionStageConfig(
-            in_channels=1 + DIFFUSION_CONDITIONING_CHANNELS, out_channels=1, base_width=base_width,
-            nonnegative_output=False,
-        )
+    return RegressionStageConfig(
+        in_channels=1 + DIFFUSION_CONDITIONING_CHANNELS, out_channels=1, base_width=base_width,
+        nonnegative_output=False,
     )
-    return EDMPrecond(raw, EDMConfig()).to(device)
+
+
+def _build_denoiser(base_width: int, device: torch.device) -> tuple[EDMPrecond, RegressionStageConfig]:
+    from src.models.diffusion_residual import SimpleNoiseConditionedUNet
+
+    raw_config = _denoiser_raw_network_config(base_width)
+    raw = SimpleNoiseConditionedUNet(raw_config)
+    return EDMPrecond(raw, EDMConfig()).to(device), raw_config
 
 
 def validate_diffusion(denoiser, stage1, loader, device, moments, sampler_config) -> dict[str, float]:
@@ -302,7 +305,7 @@ def train_diffusion_stage(
     val_loader = DataLoader(val_dataset, batch_size=config.batch_size, shuffle=False, num_workers=config.num_workers)
 
     stage1 = _load_stage1(config.stage1_checkpoint, device)
-    denoiser = _build_denoiser(config.base_width, device)
+    denoiser, denoiser_config = _build_denoiser(config.base_width, device)
     optimizer = torch.optim.AdamW(denoiser.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
     sampler_config = HeunSamplerConfig(num_steps=config.sampler_steps_for_validation)
 
@@ -335,7 +338,9 @@ def train_diffusion_stage(
         append_history(run_dir, row)
         logger.info("diffusion-stage2 epoch=%d train_loss=%.4f val_r2=%.4f", epoch, row["train_loss"], validation["r2"])
 
-        checkpoint = {"denoiser_state": denoiser.state_dict(), "epoch": epoch}
+        checkpoint = {
+            "denoiser_state": denoiser.state_dict(), "denoiser_config": asdict(denoiser_config), "epoch": epoch,
+        }
         torch.save(checkpoint, run_dir / "last.pt")
         if validation["r2"] > best_r2:
             best_r2 = validation["r2"]

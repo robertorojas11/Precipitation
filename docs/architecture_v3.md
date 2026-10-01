@@ -87,11 +87,12 @@ requirement doesn't apply to this project's scope).
 | B.2 | Clip ERA5 by IMERG min/max, log transform, pooled-variance normalization (M216-M219) | DONE | `docs/stages_v2/04-prepare.md`, `src/data_preprocessing/prepare_hourly_dataset.py`; not yet run at full historical scale (smoke-tested on real data) |
 | — | Prepared-data validation gate (final authorization to train) | DONE | `docs/stages_v2/05-validate-prepared.md`, `src/data_preprocessing/validate_hourly_dataset.py::validate_prepared` |
 | — | Training loops for all three candidates (single-region; multi-region union remains DEFERRED per B.4) | DONE (infrastructure; no real-scale run yet) | `docs/stages_v2/06-train.md`, `src/training/{dataset,common,eta_integration,train_baseline,train_gan,train_diffusion}.py` |
+| — | Evaluation wiring: checkpoint -> ensemble -> metrics -> comparison table | DONE (infrastructure; no real-scale run yet) | `docs/stages_v2/07-evaluate.md`, `src/evaluation/evaluate_hourly.py` |
 | B.4 | Hierarchical region-union training scenarios (A1–A4) | DEFERRED | mechanism supported by the region registry; not exercised with a multi-region union yet (single-region start, per 0001/0002) |
 | B.5 | CRPS (Eq. 1), percentile-MAE (Eq. 2), FSS/meFSS, RAPSD, rank histogram, eccentricity (experimental) | DONE | `src/evaluation/probabilistic_metrics.py` |
 | B.5 | R2/RMSE/MAE/BIAS continuity metrics + block-bootstrap CI | DONE | `src/evaluation/deterministic_metrics.py` |
 | — | Full-field RMSE/SSIM diagnostic + eta-learning cost report | DONE | `src/evaluation/deterministic_metrics.py` |
-| — | Cross-model comparison (deterministic/GAN/regression+diffusion, with/without eta-learning) | DONE (aggregation harness; no real training run yet to feed it) | `src/evaluation/model_comparison.py` |
+| — | Cross-model comparison (deterministic/GAN/regression+diffusion, with/without eta-learning) | DONE (aggregation harness + evaluation wiring, `docs/stages_v2/07-evaluate.md`; no real training run yet to feed it) | `src/evaluation/model_comparison.py`, `src/evaluation/evaluate_hourly.py` |
 | — | Bilinear-interpolation baseline | DONE | `src/evaluation/baselines.py` |
 | — | rainFARM baseline (P1 M195) | ABSENT (raises `NotImplementedError`, never silently skipped) | `src/evaluation/baselines.py` |
 | B.6 | Quantile mapping / few-shot fine-tuning domain adaptation | DEFERRED | Phase 4 groundwork only (§1.5 of 0002) |

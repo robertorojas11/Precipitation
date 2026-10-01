@@ -27,7 +27,7 @@ directly on valid pixels, as everywhere else in this codebase.
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import torch
@@ -112,8 +112,10 @@ def train(
     )
     val_loader = DataLoader(val_dataset, batch_size=config.batch_size, shuffle=False, num_workers=config.num_workers)
 
-    generator = ConditionalGenerator(GeneratorConfig(base_width=config.base_width, depth=config.depth)).to(device)
-    discriminator = ConditionalDiscriminator(DiscriminatorConfig()).to(device)
+    generator_config = GeneratorConfig(base_width=config.base_width, depth=config.depth)
+    discriminator_config = DiscriminatorConfig()
+    generator = ConditionalGenerator(generator_config).to(device)
+    discriminator = ConditionalDiscriminator(discriminator_config).to(device)
     g_optimizer = torch.optim.AdamW(generator.parameters(), lr=config.generator_lr, betas=(0.0, 0.999))
     d_optimizer = torch.optim.AdamW(discriminator.parameters(), lr=config.discriminator_lr, betas=(0.0, 0.5))
 
@@ -194,6 +196,7 @@ def train(
 
         checkpoint = {
             "generator_state": generator.state_dict(), "discriminator_state": discriminator.state_dict(),
+            "generator_config": asdict(generator_config), "discriminator_config": asdict(discriminator_config),
             "g_optimizer_state": g_optimizer.state_dict(), "d_optimizer_state": d_optimizer.state_dict(),
             "epoch": epoch,
         }

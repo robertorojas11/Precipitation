@@ -20,7 +20,7 @@ validates for a plain deterministic estimator, not only generative models.
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import torch
@@ -106,7 +106,8 @@ def train(
     )
     val_loader = DataLoader(val_dataset, batch_size=config.batch_size, shuffle=False, num_workers=config.num_workers)
 
-    model = DeterministicResNet(ResNetConfig(base_width=config.base_width, depth=config.depth)).to(device)
+    model_config = ResNetConfig(base_width=config.base_width, depth=config.depth)
+    model = DeterministicResNet(model_config).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
 
     eta_config = EtaConfig(
@@ -160,7 +161,10 @@ def train(
         logger.info("baseline epoch=%d train_loss=%.4f val_r2=%.4f val_mae=%.4f",
                     epoch, row["train_loss"], validation["r2"], validation["mae"])
 
-        checkpoint = {"model_state": model.state_dict(), "optimizer_state": optimizer.state_dict(), "epoch": epoch}
+        checkpoint = {
+            "model_state": model.state_dict(), "model_config": asdict(model_config),
+            "optimizer_state": optimizer.state_dict(), "epoch": epoch,
+        }
         torch.save(checkpoint, run_dir / "last.pt")
         if validation["r2"] > best_r2:
             best_r2 = validation["r2"]
