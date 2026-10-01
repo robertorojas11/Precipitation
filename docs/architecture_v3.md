@@ -86,6 +86,7 @@ requirement doesn't apply to this project's scope).
 | — | Raw/processed integrity validation gates | DONE | `docs/stages_v2/03-validate.md`, `src/data_preprocessing/validate_hourly_dataset.py` |
 | B.2 | Clip ERA5 by IMERG min/max, log transform, pooled-variance normalization (M216-M219) | DONE | `docs/stages_v2/04-prepare.md`, `src/data_preprocessing/prepare_hourly_dataset.py`; not yet run at full historical scale (smoke-tested on real data) |
 | — | Prepared-data validation gate (final authorization to train) | DONE | `docs/stages_v2/05-validate-prepared.md`, `src/data_preprocessing/validate_hourly_dataset.py::validate_prepared` |
+| — | Training loops for all three candidates (single-region; multi-region union remains DEFERRED per B.4) | DONE (infrastructure; no real-scale run yet) | `docs/stages_v2/06-train.md`, `src/training/{dataset,common,eta_integration,train_baseline,train_gan,train_diffusion}.py` |
 | B.4 | Hierarchical region-union training scenarios (A1–A4) | DEFERRED | mechanism supported by the region registry; not exercised with a multi-region union yet (single-region start, per 0001/0002) |
 | B.5 | CRPS (Eq. 1), percentile-MAE (Eq. 2), FSS/meFSS, RAPSD, rank histogram, eccentricity (experimental) | DONE | `src/evaluation/probabilistic_metrics.py` |
 | B.5 | R2/RMSE/MAE/BIAS continuity metrics + block-bootstrap CI | DONE | `src/evaluation/deterministic_metrics.py` |
@@ -118,8 +119,8 @@ requirement doesn't apply to this project's scope).
 |---|---|---|
 | W1 quantile representation (Eq. 13), Monte Carlo estimate (Eq. 14) | DONE | `src/training/eta_learning.py` |
 | Tail-biased quantile sampling (`τ`) | DONE | `src/training/eta_learning.py` |
-| ERM pre-training before activating the η term | DONE (schedule tracker; not yet wired into an actual training loop -- no trainable dataset exists yet) | `src/training/eta_learning.py::EtaLearningSchedule` |
-| IICT tail-index refresh (Algorithm 1/2) | DONE (`update_tail_index`; periodic-refresh cadence via `EtaLearningSchedule`) | `src/training/eta_learning.py` |
+| ERM pre-training before activating the η term | DONE, now wired into real training loops (optional, off by default) | `src/training/eta_learning.py::EtaLearningSchedule`, `src/training/eta_integration.py`, `docs/stages_v2/06-train.md` |
+| IICT tail-index refresh (Algorithm 1/2) | DONE (`update_tail_index`; periodic-refresh cadence via `EtaLearningSchedule`), wired for the baseline, the GAN generator, and Candidate B's stage 1 (stage 2 deferred -- sampler cost, see `docs/stages_v2/06-train.md`) | `src/training/eta_learning.py`, `src/training/eta_integration.py` |
 | Configurable / gradient-norm-adaptive `λ` | DONE | `src/training/eta_learning.py::balance_lambda` |
 | `ν0` sourcing per region (empirical vs. hypothesized GEVD) | DESIGNED (`docs/decisions/0002-implementacion-v2.md` §1.3); documented in full in `docs/ETA_LEARNING_NOTES.md` | `docs/ETA_LEARNING_NOTES.md` |
 
@@ -137,7 +138,7 @@ requirement doesn't apply to this project's scope).
 | Item | Status | Where |
 |---|---|---|
 | Original deterministic U-Net (daily CHIRPS/Oya) | DONE (archived, still runnable) | `legacy/deterministic_unet/` |
-| Fresh deterministic baseline for the hourly contract, optional η-learning | DONE (model); η-learning wiring pending an actual training loop | `src/models/deterministic_resnet.py` |
+| Fresh deterministic baseline for the hourly contract, optional η-learning | DONE (model + training loop + optional η-learning) | `src/models/deterministic_resnet.py`, `src/training/train_baseline.py` |
 
 ### Operational ensemble forecasting (Phase 4)
 
