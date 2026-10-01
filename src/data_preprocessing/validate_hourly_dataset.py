@@ -1,9 +1,10 @@
-"""Fail-fast validation for the v2-generative hourly dataset (stage 3 --
-docs/stages_v2/03-validate.md), mirroring the legacy pipeline's
-``validate_dataset.py``: two gates, ``raw`` (before build) and
-``processed`` (after build), each returning a structured
+"""Fail-fast validation for the v2-generative hourly dataset (stages 3 and
+5 -- docs/stages_v2/03-validate.md, docs/stages_v2/05-validate-prepared.md),
+mirroring the legacy pipeline's ``validate_dataset.py``: three gates,
+``raw`` (before build), ``processed`` (after build, before prepare), and
+``prepared`` (after prepare, before training), each returning a structured
 ``{region, stage, accepted, counts, errors}`` report and exiting non-zero
-on any error. Neither gate mutates data; both are safe to re-run at any
+on any error. No gate mutates data; all three are safe to re-run at any
 time as an integrity audit.
 """
 
@@ -17,6 +18,7 @@ from pathlib import Path
 import numpy as np
 
 from src.data_preprocessing.build_hourly_dataset import HOURS_PER_DAY, HOURLY_DATASET_VERSION
+from src.data_preprocessing.prepare_hourly_dataset import PREPARED_DATASET_VERSION
 from src.data_preprocessing.quality import FLOAT_FILL_THRESHOLD, file_sha256, manifest_sha256
 from src.utils.config import Config
 from src.utils.provenance import load_manifest
@@ -25,10 +27,18 @@ PROCESSED_KEYS = {
     "inputs", "target", "input_valid_mask", "target_valid_mask",
     "land_mask", "elevation", "basin_mask", "preprocessing_version",
 }
+PREPARED_KEYS = {
+    "inputs_norm", "target_norm", "invariants_norm",
+    "input_valid_mask", "target_valid_mask", "basin_mask", "preprocessing_version",
+}
 
 
 def _v2_generative_root() -> Path:
     return Path(Config.LOCAL_DATA_DIR) / HOURLY_DATASET_VERSION
+
+
+def _prepared_root() -> Path:
+    return Path(Config.LOCAL_DATA_DIR) / PREPARED_DATASET_VERSION
 
 
 def validate_raw(region: str, *, v2_raw_root: Path | None = None, full_hash_check: bool = False) -> dict:
@@ -182,15 +192,89 @@ def validate_processed(region: str, *, root: Path | None = None) -> dict:
     return {"region": region, "stage": "processed", "accepted": not errors, "counts": counts, "errors": errors}
 
 
+def validate_prepared(
+    region: str, *, prepared_root: Path | None = None, build_root: Path | None = None,
+) -> dict:
+    """Final gate before training (stage 5): confirm every prepared NPZ
+    the prepare stage recorded exists, has the expected schema, and has at
+    least one valid target pixel with finite, non-sentinel values; then
+    confirm each split's prepared count **exactly** matches the build
+    stage's own accepted count for that split -- the explicit
+    positive-and-exact completeness check
+    `docs/stages/06-validate-prepared.md` requires (a stale partial
+    prepare run must not be mistaken for a complete one just because every
+    split happens to be nonempty).
+    """
+    prepared_root = Path(prepared_root or _prepared_root())
+    build_root = Path(build_root or _v2_generative_root())
+    errors: list[dict] = []
+    counts = {"train": 0, "val": 0, "test": 0}
+
+    stats_path = prepared_root / "metadata" / "norm_stats.json"
+    if not stats_path.exists():
+        errors.append({"error": "missing_norm_stats", "path": str(stats_path)})
+
+    manifest_path = prepared_root / "metadata" / f"manifest_prepared_{region}.json"
+    manifest = load_manifest(manifest_path)
+    if manifest is None:
+        return {
+            "region": region, "stage": "prepared", "accepted": False, "counts": counts,
+            "errors": errors + [{"error": "missing_manifest", "path": str(manifest_path)}],
+        }
+
+    for record in manifest.get("records", []):
+        path = Path(record["path"])
+        split = record["split"]
+        if not path.exists():
+            errors.append({"path": str(path), "error": "missing_file"})
+            continue
+        try:
+            with np.load(path) as data:
+                missing_keys = PREPARED_KEYS - set(data.files)
+                if missing_keys:
+                    errors.append({"path": str(path), "error": "missing_keys", "keys": sorted(missing_keys)})
+                    continue
+                target = data["target_norm"][..., 0]
+                target_mask = data["target_valid_mask"].astype(bool)
+                valid_values = target[target_mask]
+                if not valid_values.size:
+                    errors.append({"path": str(path), "error": "empty_valid_mask"})
+                elif not np.all(np.isfinite(valid_values)):
+                    errors.append({"path": str(path), "error": "nonfinite_valid_values"})
+                elif np.any(np.abs(valid_values) >= FLOAT_FILL_THRESHOLD):
+                    errors.append({"path": str(path), "error": "sentinel_valid_values"})
+                else:
+                    counts[split] = counts.get(split, 0) + 1
+        except Exception as error:  # corrupted/unreadable NPZ
+            errors.append({"path": str(path), "error": "unreadable", "detail": str(error)})
+
+    expected_counts: dict[str, int] = {}
+    for row in _read_index(build_root, region):
+        if row.get("accepted") in ("True", "true", "1"):
+            expected_counts[row["split"]] = expected_counts.get(row["split"], 0) + 1
+    for split, expected in expected_counts.items():
+        if counts.get(split, 0) != expected:
+            errors.append({
+                "split": split, "error": "prepared_count_mismatch",
+                "expected_from_build_index": expected, "prepared": counts.get(split, 0),
+            })
+
+    return {"region": region, "stage": "prepared", "accepted": not errors, "counts": counts, "errors": errors}
+
+
 def validate(
     region: str, stage: str, *,
-    v2_raw_root: Path | None = None, root: Path | None = None, full_hash_check: bool = False,
+    v2_raw_root: Path | None = None, root: Path | None = None,
+    prepared_root: Path | None = None, build_root: Path | None = None,
+    full_hash_check: bool = False,
 ) -> dict:
     if stage == "raw":
         return validate_raw(region, v2_raw_root=v2_raw_root, full_hash_check=full_hash_check)
     if stage == "processed":
         return validate_processed(region, root=root)
-    raise ValueError(f"Unknown stage {stage!r}; choose 'raw' or 'processed'")
+    if stage == "prepared":
+        return validate_prepared(region, prepared_root=prepared_root, build_root=build_root or root)
+    raise ValueError(f"Unknown stage {stage!r}; choose 'raw', 'processed', or 'prepared'")
 
 
 def main() -> None:
@@ -198,7 +282,7 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--region", required=True, choices=region_defs.list_regions())
-    parser.add_argument("--stage", required=True, choices=["raw", "processed"])
+    parser.add_argument("--stage", required=True, choices=["raw", "processed", "prepared"])
     parser.add_argument("--full-hash-check", action="store_true")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()

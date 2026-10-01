@@ -182,7 +182,10 @@ def pooled_stats(per_region_moments: dict[str, dict[str, ChannelMoments]]) -> di
     return pooled
 
 
-def compute_stats(training_regions: tuple[str, ...] = TRAINING_REGIONS, *, build_root: Path | None = None) -> dict:
+def compute_stats(
+    training_regions: tuple[str, ...] = TRAINING_REGIONS, *,
+    build_root: Path | None = None, output_root: Path | None = None,
+) -> dict:
     """Full stats pipeline: IMERG clip range, per-region log moments, pooled
     combination. Writes ``norm_stats.json`` and returns it."""
     imerg_lo, imerg_hi = compute_imerg_range(training_regions, build_root=build_root)
@@ -203,7 +206,7 @@ def compute_stats(training_regions: tuple[str, ...] = TRAINING_REGIONS, *, build
             for region, moments in per_region.items()
         },
     }
-    root = _prepared_root()
+    root = Path(output_root or _prepared_root())
     metadata_dir = root / "metadata"
     metadata_dir.mkdir(parents=True, exist_ok=True)
     import json

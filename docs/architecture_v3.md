@@ -85,6 +85,7 @@ requirement doesn't apply to this project's scope).
 | — | Build/alignment: per-region canonical grid, ERA5→IMERG-grid interpolation, masks | DONE | `docs/stages_v2/02-build.md`, `src/data_preprocessing/build_hourly_dataset.py` |
 | — | Raw/processed integrity validation gates | DONE | `docs/stages_v2/03-validate.md`, `src/data_preprocessing/validate_hourly_dataset.py` |
 | B.2 | Clip ERA5 by IMERG min/max, log transform, pooled-variance normalization (M216-M219) | DONE | `docs/stages_v2/04-prepare.md`, `src/data_preprocessing/prepare_hourly_dataset.py`; not yet run at full historical scale (smoke-tested on real data) |
+| — | Prepared-data validation gate (final authorization to train) | DONE | `docs/stages_v2/05-validate-prepared.md`, `src/data_preprocessing/validate_hourly_dataset.py::validate_prepared` |
 | B.4 | Hierarchical region-union training scenarios (A1–A4) | DEFERRED | mechanism supported by the region registry; not exercised with a multi-region union yet (single-region start, per 0001/0002) |
 | B.5 | CRPS (Eq. 1), percentile-MAE (Eq. 2), FSS/meFSS, RAPSD, rank histogram, eccentricity (experimental) | DONE | `src/evaluation/probabilistic_metrics.py` |
 | B.5 | R2/RMSE/MAE/BIAS continuity metrics + block-bootstrap CI | DONE | `src/evaluation/deterministic_metrics.py` |

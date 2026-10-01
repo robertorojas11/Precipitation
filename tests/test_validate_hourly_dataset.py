@@ -11,6 +11,7 @@ import numpy as np
 from rasterio.transform import from_origin
 
 from src.data_preprocessing import build_hourly_dataset as B
+from src.data_preprocessing import prepare_hourly_dataset as P
 from src.data_preprocessing import regions
 from src.data_preprocessing import validate_hourly_dataset as V
 from src.utils import provenance
@@ -159,10 +160,88 @@ class ValidateProcessedTest(_WithSyntheticRegion):
             self.assertEqual(result["errors"][0]["error"], "missing_or_empty_dataset_index")
 
 
+class ValidatePreparedTest(_WithSyntheticRegion):
+    def _build_and_prepare(self, tmp: Path) -> tuple[Path, Path]:
+        raw_root = Path(tmp) / "raw"
+        build_root = Path(tmp) / "build"
+        prepared_root = Path(tmp) / "prepared"
+        era5_transform = from_origin(-80.2, 20.2, 0.25, 0.25)
+        imerg_transform = from_origin(-80.2, 20.2, 0.1, 0.1)
+        for offset in range(2):
+            day = date(2015, 6, 1 + offset)
+            _write_geotiff(
+                B._source_path(raw_root, "era5", self.REGION_NAME, day),
+                np.ones((48, 10, 10), dtype=np.float32), era5_transform,
+                descriptions=_era5_descriptions(),
+            )
+            _write_geotiff(
+                B._source_path(raw_root, "imerg", self.REGION_NAME, day),
+                np.full((48, 22, 22), 3.0, dtype=np.float32), imerg_transform,
+            )
+        B.build_region(self.REGION_NAME, v2_raw_root=raw_root, output_root=build_root / "processed",
+                        start=date(2015, 6, 1), end=date(2015, 6, 2))
+        stats = P.compute_stats((self.REGION_NAME,), build_root=build_root, output_root=prepared_root)
+        P.prepare_region(self.REGION_NAME, stats, build_root=build_root, output_root=prepared_root)
+        return build_root, prepared_root
+
+    def test_freshly_prepared_region_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            build_root, prepared_root = self._build_and_prepare(Path(tmp))
+            result = V.validate_prepared(self.REGION_NAME, prepared_root=prepared_root, build_root=build_root)
+            self.assertTrue(result["accepted"], result["errors"])
+            self.assertEqual(result["counts"]["train"], 2)
+
+    def test_missing_prepared_file_is_detected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            build_root, prepared_root = self._build_and_prepare(Path(tmp))
+            npz_files = list((prepared_root / self.REGION_NAME).rglob("*.npz"))
+            npz_files[0].unlink()
+            result = V.validate_prepared(self.REGION_NAME, prepared_root=prepared_root, build_root=build_root)
+            self.assertFalse(result["accepted"])
+            self.assertTrue(any(e["error"] == "missing_file" for e in result["errors"]))
+
+    def test_count_mismatch_against_build_index_is_detected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            build_root, prepared_root = self._build_and_prepare(Path(tmp))
+            npz_files = list((prepared_root / self.REGION_NAME).rglob("*.npz"))
+            npz_files[0].unlink()  # file gone, but still listed in the manifest -> mismatch too
+            manifest_path = prepared_root / "metadata" / f"manifest_prepared_{self.REGION_NAME}.json"
+            # Simulate a stale manifest that only ever recorded one of the
+            # two built days (a partial prepare run), independent of the
+            # missing-file case above: drop one record entirely.
+            payload = json.loads(manifest_path.read_text())
+            payload["records"] = payload["records"][:0]
+            payload["record_count"] = 0
+            manifest_path.write_text(json.dumps(payload))
+            result = V.validate_prepared(self.REGION_NAME, prepared_root=prepared_root, build_root=build_root)
+            self.assertFalse(result["accepted"])
+            self.assertTrue(any(e["error"] == "prepared_count_mismatch" for e in result["errors"]))
+
+    def test_missing_norm_stats_is_detected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            build_root, prepared_root = self._build_and_prepare(Path(tmp))
+            (prepared_root / "metadata" / "norm_stats.json").unlink()
+            result = V.validate_prepared(self.REGION_NAME, prepared_root=prepared_root, build_root=build_root)
+            self.assertFalse(result["accepted"])
+            self.assertTrue(any(e["error"] == "missing_norm_stats" for e in result["errors"]))
+
+    def test_missing_manifest_short_circuits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = V.validate_prepared(self.REGION_NAME, prepared_root=Path(tmp) / "prepared", build_root=Path(tmp) / "build")
+            self.assertFalse(result["accepted"])
+            self.assertTrue(any(e["error"] == "missing_manifest" for e in result["errors"]))
+
+
 class ValidateDispatchTest(unittest.TestCase):
     def test_unknown_stage_raises(self):
         with self.assertRaises(ValueError):
             V.validate("mexico_pacifico", "not_a_real_stage")
+
+    def test_prepared_stage_dispatches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = V.validate("mexico_pacifico", "prepared", prepared_root=Path(tmp), build_root=Path(tmp))
+            self.assertEqual(result["stage"], "prepared")
+            self.assertFalse(result["accepted"])
 
 
 if __name__ == "__main__":

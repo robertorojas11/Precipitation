@@ -134,7 +134,8 @@ class ComputeStatsTest(_WithTwoSyntheticRegions):
                 B.build_region(region, v2_raw_root=raw_root, output_root=build_root / "processed",
                                 start=date(2015, 6, 1), end=date(2015, 6, 1))
 
-            stats = P.compute_stats((self.REGION_A, self.REGION_B), build_root=build_root)
+            stats = P.compute_stats((self.REGION_A, self.REGION_B), build_root=build_root,
+                                     output_root=build_root / "prepared")
 
             lo, hi = stats["era5_clip_range_imerg_mm_per_hr"]
             self.assertAlmostEqual(lo, 4.0, delta=1e-3)  # min of {4.0, 8.0}... region-pooled range
@@ -165,7 +166,8 @@ class PrepareRegionTest(_WithTwoSyntheticRegions):
                 B.build_region(region, v2_raw_root=raw_root, output_root=build_root / "processed",
                                 start=date(2015, 6, 1), end=date(2015, 6, 1))
 
-            stats = P.compute_stats((self.REGION_A, self.REGION_B), build_root=build_root)
+            stats = P.compute_stats((self.REGION_A, self.REGION_B), build_root=build_root,
+                                     output_root=prepared_root)
             manifest = P.prepare_region(self.REGION_A, stats, build_root=build_root, output_root=prepared_root)
 
             self.assertEqual(manifest["record_count"], 1)
@@ -204,7 +206,8 @@ class PrepareRegionTest(_WithTwoSyntheticRegions):
             B.build_region(self.REGION_B, v2_raw_root=raw_root, output_root=build_root / "processed",
                             start=date(2020, 1, 1), end=date(2020, 1, 1))  # a "val" year -> not used for stats
 
-            stats = P.compute_stats((self.REGION_A,), build_root=build_root)  # A only "trains"
+            stats = P.compute_stats((self.REGION_A,), build_root=build_root,
+                                     output_root=prepared_root)  # A only "trains"
             manifest = P.prepare_region(self.REGION_B, stats, build_root=build_root, output_root=prepared_root)
             self.assertEqual(manifest["record_count"], 1)
             self.assertTrue(Path(manifest["records"][0]["path"]).exists())
