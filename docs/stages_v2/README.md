@@ -23,7 +23,7 @@ implemented; earlier stages are complete, later ones are listed here as
 | 5 | [Validate prepared](05-validate-prepared.md) | DONE | Final, read-only authorization-to-train gate |
 | 6 | [Training](06-train.md) | DONE (infrastructure; no real-scale run yet) | Training loops + checkpoints for the deterministic baseline, Candidate A (GAN), and Candidate B (regression + residual diffusion), with optional η-learning |
 | 7 | [Evaluation](07-evaluate.md) | DONE (infrastructure; no real-scale run yet) | CRPS/FSS/percentile-MAE/RMSE-SSIM scores, geographic-generalization (zero-shot Puerto Rico/Caribe) results, cross-model comparison |
-| 8 | Interpretability and calibrated products | PLANNED (code exists, unwired to a trained model) | Shapley attribution, per-pixel quantile/exceedance maps |
+| 8 | [Interpretability and calibrated products](08-interpretability.md) | DONE (infrastructure; no real-scale run yet) | Shapley attribution, per-pixel quantile/exceedance maps |
 
 ## Shared experimental contract
 

@@ -129,10 +129,10 @@ requirement doesn't apply to this project's scope).
 
 | Item | Status | Where |
 |---|---|---|
-| Shapley attribution over input channels (exact enumeration + sampling fallback) | DONE | `src/evaluation/shapley_attribution.py` |
-| Per-pixel distribution fitting (Weibull/Gamma/Log-normal/Burr XII/two-component Weibull mixture) + zero-inflation | DONE | `src/evaluation/pixel_distributions.py` |
+| Shapley attribution over input channels (exact enumeration + sampling fallback) | DONE, wired to a trained checkpoint (`docs/stages_v2/08-interpretability.md`) | `src/evaluation/shapley_attribution.py`, `src/evaluation/interpretability_hourly.py` |
+| Per-pixel distribution fitting (Weibull/Gamma/Log-normal/Burr XII/two-component Weibull mixture) + zero-inflation | DONE, wired to a trained checkpoint | `src/evaluation/pixel_distributions.py`, `src/evaluation/interpretability_hourly.py` |
 | AIC/BIC family selection + bootstrap Anderson-Darling goodness-of-fit (rejects a lowest-AIC family that fails GoF) | DONE | `src/evaluation/pixel_distributions.py` |
-| Quantile maps + threshold-exceedance products | DONE | `src/evaluation/pixel_distributions.py` |
+| Quantile maps + threshold-exceedance products | DONE, wired to a trained checkpoint | `src/evaluation/pixel_distributions.py`, `src/evaluation/interpretability_hourly.py` |
 
 ### Deterministic baseline (continuity)
 

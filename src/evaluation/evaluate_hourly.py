@@ -211,36 +211,31 @@ def run_evaluation(
     return result
 
 
-def _wrap_deterministic(model) -> "callable":
+def load_baseline_predict_fn(checkpoint_path: str | Path, *, device: str = "cpu"):
+    """Builds the ``predict_fn(inputs, invariants) -> (1, B, 1, H, W)`` mm/hr
+    ensemble this module's shared contract expects, from a trained
+    `train_baseline.py` checkpoint. Factored out of `evaluate_baseline` so
+    stage 8's interpretability wiring (Shapley attribution, per-pixel
+    distribution fitting) can reuse the exact same loading/inference code
+    rather than re-deriving it -- the two stages need the same "checkpoint
+    -> prediction" step, just feed it to different downstream consumers.
+    """
+    device_t = torch.device(device if device.startswith("cuda") and torch.cuda.is_available() else "cpu")
+    payload = torch.load(checkpoint_path, map_location=device_t, weights_only=False)
+    model = DeterministicResNet(ResNetConfig(**payload["model_config"])).to(device_t)
+    model.load_state_dict(payload["model_state"])
+    model.eval()
+
     def predict(inputs: torch.Tensor, invariants: torch.Tensor) -> torch.Tensor:
         return model(inputs, invariants).unsqueeze(0)
 
     return predict
 
 
-def evaluate_baseline(
-    region: str, split: str, checkpoint_path: str | Path, *,
-    prepared_root: Path | None = None, device: str = "cpu", **kwargs,
-) -> dict:
-    device_t = torch.device(device if device.startswith("cuda") and torch.cuda.is_available() else "cpu")
-    payload = torch.load(checkpoint_path, map_location=device_t, weights_only=False)
-    model = DeterministicResNet(ResNetConfig(**payload["model_config"])).to(device_t)
-    model.load_state_dict(payload["model_state"])
-    model.eval()
-    result = run_evaluation(
-        region, split, _wrap_deterministic(model),
-        prepared_root=prepared_root, device=device, n_members=1, **kwargs,
-    )
-    result["model_name"] = "deterministic"
-    result["checkpoint"] = str(checkpoint_path)
-    return result
-
-
-def evaluate_gan(
-    region: str, split: str, checkpoint_path: str | Path, *,
-    prepared_root: Path | None = None, device: str = "cpu",
-    n_members: int = DEFAULT_ENSEMBLE_MEMBERS, seed: int = 0, **kwargs,
-) -> dict:
+def load_gan_predict_fn(
+    checkpoint_path: str | Path, *, device: str = "cpu",
+    n_members: int = DEFAULT_ENSEMBLE_MEMBERS, seed: int = 0,
+):
     device_t = torch.device(device if device.startswith("cuda") and torch.cuda.is_available() else "cpu")
     payload = torch.load(checkpoint_path, map_location=device_t, weights_only=False)
     generator = ConditionalGenerator(GeneratorConfig(**payload["generator_config"])).to(device_t)
@@ -250,20 +245,15 @@ def evaluate_gan(
     def predict(inputs: torch.Tensor, invariants: torch.Tensor) -> torch.Tensor:
         return generator.sample(inputs, invariants, n_members=n_members, seed=seed)
 
-    result = run_evaluation(
-        region, split, predict, prepared_root=prepared_root, device=device, n_members=n_members, **kwargs,
-    )
-    result["model_name"] = "gan"
-    result["checkpoint"] = str(checkpoint_path)
-    return result
+    return predict
 
 
-def evaluate_diffusion(
-    region: str, split: str, stage1_checkpoint: str | Path, stage2_checkpoint: str | Path, *,
+def load_diffusion_predict_fn(
+    stage1_checkpoint: str | Path, stage2_checkpoint: str | Path, *,
     prepared_root: Path | None = None, device: str = "cpu",
     n_members: int = DEFAULT_ENSEMBLE_MEMBERS, seed: int = 0,
-    sampler_config: HeunSamplerConfig | None = None, **kwargs,
-) -> dict:
+    sampler_config: HeunSamplerConfig | None = None,
+):
     device_t = torch.device(device if device.startswith("cuda") and torch.cuda.is_available() else "cpu")
     sampler_config = sampler_config or HeunSamplerConfig()
 
@@ -293,6 +283,44 @@ def evaluate_diffusion(
             members.append(denormalize_to_mm(stage1_mean + residual, moments))
         return torch.stack(members, dim=0)
 
+    return predict
+
+
+def evaluate_baseline(
+    region: str, split: str, checkpoint_path: str | Path, *,
+    prepared_root: Path | None = None, device: str = "cpu", **kwargs,
+) -> dict:
+    predict = load_baseline_predict_fn(checkpoint_path, device=device)
+    result = run_evaluation(region, split, predict, prepared_root=prepared_root, device=device, n_members=1, **kwargs)
+    result["model_name"] = "deterministic"
+    result["checkpoint"] = str(checkpoint_path)
+    return result
+
+
+def evaluate_gan(
+    region: str, split: str, checkpoint_path: str | Path, *,
+    prepared_root: Path | None = None, device: str = "cpu",
+    n_members: int = DEFAULT_ENSEMBLE_MEMBERS, seed: int = 0, **kwargs,
+) -> dict:
+    predict = load_gan_predict_fn(checkpoint_path, device=device, n_members=n_members, seed=seed)
+    result = run_evaluation(
+        region, split, predict, prepared_root=prepared_root, device=device, n_members=n_members, **kwargs,
+    )
+    result["model_name"] = "gan"
+    result["checkpoint"] = str(checkpoint_path)
+    return result
+
+
+def evaluate_diffusion(
+    region: str, split: str, stage1_checkpoint: str | Path, stage2_checkpoint: str | Path, *,
+    prepared_root: Path | None = None, device: str = "cpu",
+    n_members: int = DEFAULT_ENSEMBLE_MEMBERS, seed: int = 0,
+    sampler_config: HeunSamplerConfig | None = None, **kwargs,
+) -> dict:
+    predict = load_diffusion_predict_fn(
+        stage1_checkpoint, stage2_checkpoint, prepared_root=prepared_root, device=device,
+        n_members=n_members, seed=seed, sampler_config=sampler_config,
+    )
     result = run_evaluation(
         region, split, predict, prepared_root=prepared_root, device=device, n_members=n_members, **kwargs,
     )
