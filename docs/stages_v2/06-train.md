@@ -6,8 +6,10 @@ The first stage with an actual trainable PyTorch loop: three separate
 training scripts, one per model this project compares (PASO 5 of
 `docs/decisions/0002-implementacion-v2.md`), all reading stage 4/5's
 normalized, per-region prepared tensors directly (`norm_stats.json` +
-`manifest_prepared_<region>.json`; recommended precondition, not yet
-enforced by an orchestrator: [stage 5's](05-validate-prepared.md)
+`manifest_prepared_<region>.json`; recommended precondition, enforced by
+`src/data_preprocessing/pipeline_hourly.py` for stages 1-5 but not
+automatically before this stage, which stays a separate, manual step by
+design: [stage 5's](05-validate-prepared.md)
 `validate_prepared(region)["accepted"]`). Implementation:
 `src/training/{dataset,common,eta_integration,train_baseline,train_gan,
 train_diffusion}.py`.
@@ -231,8 +233,10 @@ didn't broadcast a `(B, H, W)` mask against a `(B, 1, H, W)` field (fixed in
 - Candidate B's eta-learning gap (stage 2 only) and the GAN's
   discriminator-masking deviation, both above, are deliberate and
   documented, not oversights.
-- No orchestrator yet enforces stage 5's validation gate before a training
-  script runs (same gap noted throughout `docs/stages_v2/`).
+- `src/data_preprocessing/pipeline_hourly.py` orchestrates stages 1-5 (the
+  dataset-building side) but deliberately does not extend into training --
+  nothing yet enforces stage 5's validation gate automatically before a
+  training script runs; check it by hand first.
 
 ## Connection to the next stage
 

@@ -13,9 +13,9 @@ the same `{region, stage, accepted, counts, errors}` result shape and CLI.
 Input: `manifest_prepared_<region>.json` and `norm_stats.json`
 ([Prepare](04-prepare.md)), cross-checked against
 `dataset_index_hourly_<region>.csv` ([Build / alignment](02-build.md)).
-Recommended precondition (not yet enforced by an orchestrator, same gap
-noted throughout `docs/stages_v2/`): stage 4 has actually run for the
-region being validated.
+Precondition, enforced automatically as the final stage of
+`src/data_preprocessing/pipeline_hourly.py`: stage 4 has actually run for
+the region being validated.
 
 ```bash
 python -m src.data_preprocessing.validate_hourly_dataset --region mexico_pacifico --stage prepared
@@ -137,8 +137,12 @@ one more case confirming `--stage prepared` reaches `validate_prepared()`.
   itself has not been run at that scale yet (per
   [Prepare](04-prepare.md)'s own "Known limitations"), so this gate has
   only been exercised against synthetic and small real smoke-test data.
-- No orchestrator yet enforces this gate before a training loop starts
-  (same gap noted throughout `docs/stages_v2/`); it must be run manually.
+- `src/data_preprocessing/pipeline_hourly.py` enforces this gate as the
+  last step of the data pipeline, but nothing yet enforces it
+  *automatically* before a training loop starts (`docs/stages_v2/
+  06-train.md`'s own limitation) — training remains a separate,
+  deliberately manual step, so this gate still has to be checked by hand
+  (or scripted) immediately before training.
 
 ## Connection to the next stage
 

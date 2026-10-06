@@ -63,6 +63,25 @@ Every stage that touches per-region artifacts writes:
   stage-specific metadata (grid definition, region summary, accepted/
   rejected counts).
 
-There is no single orchestrator script yet analogous to `pipeline.py` for
-this framework (tracked as a gap, not silently assumed away); each stage is
-run directly via its module's CLI until one is built.
+`src/data_preprocessing/pipeline_hourly.py` orchestrates stages 1
+(validate raw) through 5 (validate prepared) end to end -- validate raw ->
+build -> validate processed -> compute stats -> prepare -> validate
+prepared -- mirroring the legacy daily pipeline's own `pipeline.py`
+(resumable, durably-logged, stage-ordered), with every validation stage a
+hard gate that halts the run on `accepted: false` unless
+`--continue-on-error` is passed. Resumability reuses the real validation
+gates as the "is this stage already done" check, not a separate
+heuristic. Stage 6 (training) is deliberately **not** a stage here -- it
+is model-specific and explicitly user-triggered per candidate
+(`docs/stages_v2/06-train.md`), so the orchestrator's scope stops at
+"build a trainable, validated dataset", the same scope PASO 1-4 of
+`docs/decisions/0002-implementacion-v2.md` give stages 1-5.
+
+```bash
+python -m src.data_preprocessing.pipeline_hourly
+```
+
+Before this existed, each stage had to be run by hand via its own
+module's CLI, in the right order, with no automatic halt on a failing
+gate -- still possible (every module's CLI still works standalone), just
+no longer the only way.

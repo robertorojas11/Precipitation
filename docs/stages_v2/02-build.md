@@ -179,9 +179,6 @@ valid target-pixel-hours out of 24×200×160 = 768,000 possible.
   derived from any paper or from measured per-region data quality — revisit
   once real coverage/quality statistics are available per region
   (`docs/decisions/0002-implementacion-v2.md` OQ-6).
-- No orchestrator script yet ties acquisition → build → prepare → train
-  together (same gap noted in `docs/stages_v2/README.md`); each stage is
-  run by hand via its own CLI for now.
 
 ## Connection to the next stage
 

@@ -16,8 +16,8 @@ experimental skeleton. Implementation:
 `src/data_preprocessing/prepare_hourly_dataset.py`.
 
 Input: `dataset_index_hourly_<region>.csv` and the per-day NPZs from
-[Build / alignment](02-build.md). Recommended precondition (not yet
-enforced by an orchestrator): [stage 3's](03-validate.md)
+[Build / alignment](02-build.md). Precondition, enforced automatically
+when run through `src/data_preprocessing/pipeline_hourly.py`: [stage 3's](03-validate.md)
 `validate_processed(region)["accepted"]`.
 
 ```bash
@@ -152,9 +152,6 @@ just a shape check). 174 tests pass total.
   per region. Running it at full scale is a deliberate, explicit next
   action (mirrors how the acquisition stage's full-scale run was a
   separate, user-triggered step, not something done automatically).
-- No orchestrator yet enforces stage 3's validation gate before this stage
-  runs (same gap noted throughout `docs/stages_v2/`).
-
 ## Connection to the next stage
 
 Stage 5 (PLANNED — validate prepared) should confirm every prepared file

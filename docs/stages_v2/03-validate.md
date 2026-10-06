@@ -17,9 +17,9 @@ python -m src.data_preprocessing.validate_hourly_dataset --region mexico_pacific
 
 Both print a JSON report (`{region, stage, accepted, counts, errors}`) to
 stdout, optionally also to `--output <path>`, and exit non-zero when
-`accepted` is `false` — safe to wire into a future orchestrator as a
-blocking gate, and safe to run standalone at any time as an integrity
-audit (neither gate writes or deletes anything).
+`accepted` is `false` — wired as a blocking gate in
+`src/data_preprocessing/pipeline_hourly.py`, and safe to run standalone at
+any time as an integrity audit (neither gate writes or deletes anything).
 
 ## `--stage raw`: acquisition integrity
 
@@ -100,7 +100,8 @@ against the real completed acquisition (`--stage raw`,
 
 ## Connection to the next stage
 
-Stage 4 (Prepare) should require `validate_processed(region)["accepted"]`
-before computing normalization statistics — not yet wired into a single
-orchestrated pipeline (`docs/stages_v2/README.md`'s "no orchestrator yet"
-gap), so this is a manual precondition for now, not an enforced one.
+Stage 4 (Prepare) requires `validate_processed(region)["accepted"]`
+before computing normalization statistics — enforced automatically when
+run through `src/data_preprocessing/pipeline_hourly.py`
+(`docs/stages_v2/README.md`'s "Orchestration and provenance"); still only
+a manual precondition when a stage's own CLI is run standalone.

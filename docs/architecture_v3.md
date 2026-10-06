@@ -88,6 +88,7 @@ requirement doesn't apply to this project's scope).
 | — | Prepared-data validation gate (final authorization to train) | DONE | `docs/stages_v2/05-validate-prepared.md`, `src/data_preprocessing/validate_hourly_dataset.py::validate_prepared` |
 | — | Training loops for all three candidates (single-region; multi-region union remains DEFERRED per B.4) | DONE (infrastructure; no real-scale run yet) | `docs/stages_v2/06-train.md`, `src/training/{dataset,common,eta_integration,train_baseline,train_gan,train_diffusion}.py` |
 | — | Evaluation wiring: checkpoint -> ensemble -> metrics -> comparison table | DONE (infrastructure; no real-scale run yet) | `docs/stages_v2/07-evaluate.md`, `src/evaluation/evaluate_hourly.py` |
+| — | Orchestrator for stages 1-5 (validate raw -> build -> validate processed -> stats -> prepare -> validate prepared), resumable + hard-gated | DONE | `docs/stages_v2/README.md` "Orchestration and provenance", `src/data_preprocessing/pipeline_hourly.py` |
 | B.4 | Hierarchical region-union training scenarios (A1–A4) | DEFERRED | mechanism supported by the region registry; not exercised with a multi-region union yet (single-region start, per 0001/0002) |
 | B.5 | CRPS (Eq. 1), percentile-MAE (Eq. 2), FSS/meFSS, RAPSD, rank histogram, eccentricity (experimental) | DONE | `src/evaluation/probabilistic_metrics.py` |
 | B.5 | R2/RMSE/MAE/BIAS continuity metrics + block-bootstrap CI | DONE | `src/evaluation/deterministic_metrics.py` |
