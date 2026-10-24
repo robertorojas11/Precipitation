@@ -19,12 +19,31 @@ P1 Eq. (4)   L_G  = L_GAN(G) + L_L1(G)                              (no weightin
 ------------------------------------------------------------------------
 
 P1 minimises a stepwise adversarial objective (refs 54, 55). Eq. (1)/(2) are
-written as expectations of ``log D``; the *minimisation* forms below are the
-standard binary-cross-entropy equivalents:
+written as expectations of ``log D``; the *minimisation* forms below were
+originally the standard binary-cross-entropy equivalents:
 
 * minimising ``L_D`` w.r.t. D  == BCE(D(X,Y), 1) + BCE(D(X,\hat{Y}), 0)
 * the generator *maximises* ``L_GAN(G)``; the non-saturating minimisation form
   is ``BCE(D(X, G(X)), 1)``.
+
+**Deviation from P1 Eq. (1)/(2), documented.** Measured on real training
+(run4, both regions, 20 real epochs): with this project's shared-masking
+rule (below), the overwhelming majority of pixels are identical zero in
+both the real and fake field, so the plain absolute BCE above gives the
+discriminator almost no ordinary signal to learn from -- ``d_loss`` pegs at
+exactly ``2*ln(2)`` (random-chance BCE on *both* terms) from epoch 1 and
+never moves, which also flatlines the generator's adversarial term (its
+gradient is ``~0`` once the discriminator can't separate the classes at
+all). ``discriminator_loss``/``generator_adversarial_loss`` now implement
+the **relativistic discriminator** (RSGAN, Jolicoeur-Martineau 2018):
+comparing ``D(real) - D(fake)`` directly gives a learnable signal even when
+each side's absolute logit sits near 0, because what matters is the *sign
+and margin of the difference*, not an absolute "is this realistic" verdict
+computed from mostly-identical-zero pixels. One-sided label smoothing
+(default 0.1) is layered on top so the discriminator is never asked to push
+that margin to ``+inf`` -- an unreachable target with this few informative
+pixels that would otherwise just reproduce the original flat-gradient
+problem at the relativistic margin instead of the absolute one.
 
 P1 Eq. (3) explicitly averages **3** members ("comparing high-resolution
 targets to the ensemble mean prediction of 3 members") -- matrix M152 flags
@@ -53,25 +72,37 @@ def _masked_mean(values: torch.Tensor, mask: torch.Tensor | None) -> torch.Tenso
 def discriminator_loss(
     real_logits: torch.Tensor,
     fake_logits: torch.Tensor,
+    *,
+    label_smoothing: float = 0.1,
 ) -> torch.Tensor:
-    """P1 Eq. (1): binary-cross-entropy discriminator loss (matrix M146, M150).
+    """Relativistic discriminator loss (RSGAN), module docstring's "Deviation
+    from P1 Eq. (1)/(2)" explains why this replaced the plain BCE.
 
     ``real_logits`` = D(X, Y), ``fake_logits`` = D(X, \\hat{Y}) with \\hat{Y}
-    detached from the generator graph. Minimising this equals minimising
-    ``-E[log D(X,Y)] - E[log(1 - D(X, \\hat{Y}))]``.
+    detached from the generator graph. Minimises
+    ``BCE(D(X,Y) - D(X,\\hat{Y}), 1 - label_smoothing)``.
     """
-    real = F.binary_cross_entropy_with_logits(real_logits, torch.ones_like(real_logits))
-    fake = F.binary_cross_entropy_with_logits(fake_logits, torch.zeros_like(fake_logits))
-    return real + fake
+    rel_logits = real_logits - fake_logits
+    target = torch.full_like(rel_logits, 1.0 - label_smoothing)
+    return F.binary_cross_entropy_with_logits(rel_logits, target)
 
 
-def generator_adversarial_loss(fake_logits: torch.Tensor) -> torch.Tensor:
-    """P1 Eq. (2): adversarial term ``L_GAN(G)`` (non-saturating minimisation form).
+def generator_adversarial_loss(
+    fake_logits: torch.Tensor,
+    real_logits: torch.Tensor,
+    *,
+    label_smoothing: float = 0.1,
+) -> torch.Tensor:
+    """Relativistic adversarial term, symmetric with ``discriminator_loss``.
 
-    The generator maximises ``E_X[log D(X, G(X))]``; equivalently it minimises
-    ``BCE(D(X, G(X)), 1)``.
+    ``real_logits`` = D(X, Y) **detached** (no gradient should flow to the
+    discriminator from the generator's step); ``fake_logits`` = D(X, G(X))
+    with gradient enabled so it reaches the generator. Minimises
+    ``BCE(D(X,\\hat{Y}) - D(X,Y), 1 - label_smoothing)``.
     """
-    return F.binary_cross_entropy_with_logits(fake_logits, torch.ones_like(fake_logits))
+    rel_logits = fake_logits - real_logits
+    target = torch.full_like(rel_logits, 1.0 - label_smoothing)
+    return F.binary_cross_entropy_with_logits(rel_logits, target)
 
 
 def ensemble_l1_loss(
@@ -96,18 +127,21 @@ def ensemble_l1_loss(
 
 def generator_loss(
     fake_logits: torch.Tensor,
+    real_logits: torch.Tensor,
     members: torch.Tensor,
     target: torch.Tensor,
     mask: torch.Tensor | None = None,
     *,
     l1_weight: float = 1.0,
+    label_smoothing: float = 0.1,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    """P1 Eq. (4): ``L_G = L_GAN(G) + L_L1(G)``.
+    """P1 Eq. (4): ``L_G = L_GAN(G) + L_L1(G)``, with the relativistic
+    ``L_GAN(G)`` from ``generator_adversarial_loss`` (see module docstring).
 
     P1 uses no explicit weighting between the two terms; ``l1_weight`` defaults
     to 1.0 to match the paper and is exposed only for ablation.
     """
-    adversarial = generator_adversarial_loss(fake_logits)
+    adversarial = generator_adversarial_loss(fake_logits, real_logits, label_smoothing=label_smoothing)
     l1 = ensemble_l1_loss(members, target, mask)
     total = adversarial + l1_weight * l1
     return total, {

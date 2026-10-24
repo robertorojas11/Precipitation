@@ -50,6 +50,27 @@ def target_moments(stats: dict) -> ChannelMoments:
     return ChannelMoments(**stats["pooled"]["target"])
 
 
+def input_moments(stats: dict) -> tuple[ChannelMoments, ChannelMoments]:
+    """``(cp_moments, lsp_moments)`` -- mirrors ``target_moments``, for
+    denormalizing the two ``inputs_norm`` channels (``[cp, lsp]``, see
+    ``prepare_hourly_dataset.prepare_region``) back to physical mm.
+    """
+    return ChannelMoments(**stats["pooled"]["cp"]), ChannelMoments(**stats["pooled"]["lsp"])
+
+
+def total_precip_input_mm(
+    inputs_norm: torch.Tensor, cp_moments: ChannelMoments, lsp_moments: ChannelMoments,
+) -> torch.Tensor:
+    """Physical-mm ERA5 total precipitation (cp + lsp) on the HR grid, from
+    the normalized ``inputs`` tensor's first two channels -- the
+    ``total_precip_input`` that ``DeterministicResNet.forward``'s
+    residual-over-input branch expects (``src/models/deterministic_resnet.py``).
+    """
+    cp_mm = denormalize_to_mm(inputs_norm[:, 0:1], cp_moments)
+    lsp_mm = denormalize_to_mm(inputs_norm[:, 1:2], lsp_moments)
+    return cp_mm + lsp_mm
+
+
 def denormalize_to_mm(target_norm: torch.Tensor, moments: ChannelMoments) -> torch.Tensor:
     """Inverse of stage 4's M217+M219: undo the z-score, then the log
     transform, returning physical precipitation in mm/hr, non-negative.
@@ -63,7 +84,23 @@ def denormalize_to_mm(target_norm: torch.Tensor, moments: ChannelMoments) -> tor
 
 
 def masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-    weights = mask.to(values.dtype)
+    """Mean of ``values`` over pixels where ``mask`` is truthy.
+
+    **Shape bug, found and fixed 2026-10-19.** ``mask`` is usually (B, H, W)
+    (``loss_mask``'s native shape) while ``values`` is (B, 1, H, W). Without
+    this guard, ``values * mask`` silently broadcasts the size-1 channel
+    axis against the *batch* axis instead (both are non-1 after padding),
+    producing a (B, B, H, W) cross-batch outer product -- confirmed
+    numerically (a 3x4x4 synthetic case gave 1.145 instead of the correct
+    0.363). This was live in ``train_baseline.py``'s and diffusion stage-1's
+    training loss (not validation -- ``PooledMetrics.update`` already had
+    this same guard), so every gradient step was computed over a corrupted
+    mix of unrelated batch elements' residuals and masks instead of each
+    sample's own pixels.
+    """
+    if mask.dim() == values.dim() - 1:
+        mask = mask.unsqueeze(1)
+    weights = mask.to(values.dtype).expand_as(values)
     return (values * weights).sum() / weights.sum().clamp_min(1.0)
 
 
@@ -91,14 +128,32 @@ class PooledMetrics:
     validation pass (pooled, not averaged-per-batch, so small last batches
     don't get over-weighted) -- same construction as
     ``legacy/deterministic_unet/train.py``'s ``PooledMetrics``.
+
+    **Residual winsorizing, and why.** Measured on real diffusion-stage1/2
+    training (run4): a single pathological sample in a validation pass (one
+    pixel, one batch) can drive a squared-error-based ``r2`` to something
+    like ``-4e18`` or ``-738682`` -- not genuine model badness, but one
+    numerically-unstable prediction swamping a sum over otherwise-sane
+    residuals. ERA5's own clip ceiling for this dataset is ~130mm/hr
+    (``norm_stats.era5_clip_range_imerg_mm_per_hr``), so no physically
+    plausible residual should ever exceed a few hundred mm -- ``
+    max_abs_residual`` (default 500.0mm, generous on purpose) clips the
+    residual *before* squaring, so one numerical blow-up no longer renders
+    the whole epoch's r2 unreadable while leaving every ordinary residual
+    untouched. ``clipped_count`` in ``compute()`` surfaces exactly how often
+    this fires -- if it's ever more than a handful of pixels, that is itself
+    a signal worth investigating, not something to silently absorb.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, max_abs_residual: float | None = 500.0) -> None:
         self.count = 0
         self.obs_sum = 0.0
         self.obs_sq_sum = 0.0
         self.res_sq_sum = 0.0
         self.abs_sum = 0.0
+        self.log_abs_sum = 0.0
+        self.clipped_count = 0
+        self.max_abs_residual = max_abs_residual
 
     def update(self, prediction: torch.Tensor, observation: torch.Tensor, mask: torch.Tensor) -> None:
         if mask.dim() == prediction.dim() - 1:
@@ -109,8 +164,21 @@ class PooledMetrics:
         self.count += obs.numel()
         self.obs_sum += obs.sum().item()
         self.obs_sq_sum += torch.square(obs).sum().item()
-        self.res_sq_sum += torch.square(obs - pred).sum().item()
-        self.abs_sum += torch.abs(obs - pred).sum().item()
+
+        residual = obs - pred
+        if self.max_abs_residual is not None:
+            clipped = residual.clamp(-self.max_abs_residual, self.max_abs_residual)
+            self.clipped_count += int((residual != clipped).sum().item())
+            residual = clipped
+        self.res_sq_sum += torch.square(residual).sum().item()
+        self.abs_sum += torch.abs(residual).sum().item()
+
+        # log-space MAE: scale-robust (a 1mm vs 2mm miss and a 50mm vs 100mm
+        # miss both read as log1p-diff ~= 0.69), so one extreme-rain pixel
+        # can't dominate it the way it dominates a squared-error metric --
+        # a second, differently-robust read on the same validation pass.
+        log_residual = torch.log1p(obs.clamp_min(0.0)) - torch.log1p(pred.clamp_min(0.0))
+        self.log_abs_sum += torch.abs(log_residual).sum().item()
 
     def compute(self) -> dict[str, float]:
         denominator = self.obs_sq_sum - self.obs_sum ** 2 / max(self.count, 1)
@@ -118,6 +186,8 @@ class PooledMetrics:
             "r2": 1.0 - self.res_sq_sum / denominator if denominator > 0 else float("nan"),
             "rmse": math.sqrt(self.res_sq_sum / max(self.count, 1)),
             "mae": self.abs_sum / max(self.count, 1),
+            "log_mae": self.log_abs_sum / max(self.count, 1),
+            "clipped_count": self.clipped_count,
             "valid_pixels": self.count,
         }
 

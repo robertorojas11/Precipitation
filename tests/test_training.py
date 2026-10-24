@@ -9,6 +9,7 @@ from datetime import date
 from pathlib import Path
 import tempfile
 import unittest
+import unittest.mock
 
 import numpy as np
 import torch
@@ -138,10 +139,229 @@ class PreparedHourlyDatasetTest(_WithPreparedSyntheticRegion):
         with self.assertRaises(ValueError):
             PreparedHourlyDataset(self.REGION_NAME, "bogus", prepared_root=self.prepared_root)
 
+    def test_per_day_cache_avoids_reopening_the_same_file(self):
+        from src.training.dataset import PreparedHourlyDataset
+
+        dataset = PreparedHourlyDataset(self.REGION_NAME, "train", prepared_root=self.prepared_root)
+        open_calls = []
+        real_load = np.load
+
+        def counting_load(path, *args, **kwargs):
+            open_calls.append(path)
+            return real_load(path, *args, **kwargs)
+
+        with unittest.mock.patch("src.training.dataset.np.load", side_effect=counting_load):
+            for hour in range(24):  # day 0, every hour -- sequential, same day throughout
+                dataset[hour]
+        self.assertEqual(len(open_calls), 1, "24 hours of the same day should open the NPZ exactly once")
+
+        with unittest.mock.patch("src.training.dataset.np.load", side_effect=counting_load):
+            dataset[24]  # day 1 -- a genuine cache miss
+        self.assertEqual(len(open_calls), 2)
+
+    def test_day_grouped_sampler_covers_every_index_grouped_by_day(self):
+        from src.training.dataset import HOURS_PER_DAY, DayGroupedSampler, PreparedHourlyDataset
+
+        dataset = PreparedHourlyDataset(self.REGION_NAME, "train", prepared_root=self.prepared_root)
+        sampler = DayGroupedSampler(dataset, shuffle=True, seed=0)
+        order = list(sampler)
+        self.assertEqual(sorted(order), list(range(len(dataset))))  # full coverage, no duplicates
+
+        # Every run of HOURS_PER_DAY consecutive yielded indices must share
+        # the same day -- the exact property the per-day cache depends on.
+        for start in range(0, len(order), HOURS_PER_DAY):
+            days_in_block = {index // HOURS_PER_DAY for index in order[start:start + HOURS_PER_DAY]}
+            self.assertEqual(days_in_block, {order[start] // HOURS_PER_DAY})
+
+        sampler.set_epoch(1)
+        self.assertNotEqual(list(sampler), order, "a different epoch must reshuffle the day order")
+
+    def test_preload_loads_every_day_up_front_and_getitem_matches_non_preloaded(self):
+        from src.training.dataset import PreparedHourlyDataset
+
+        lazy = PreparedHourlyDataset(self.REGION_NAME, "train", prepared_root=self.prepared_root)
+        preloaded = PreparedHourlyDataset(
+            self.REGION_NAME, "train", prepared_root=self.prepared_root, preload=True,
+        )
+        for index in range(len(lazy)):
+            for key in ("inputs", "invariants", "target", "input_valid_mask", "target_valid_mask"):
+                torch.testing.assert_close(lazy[index][key], preloaded[index][key])
+
+    def test_preload_true_does_not_require_sequential_access(self):
+        from src.training.dataset import PreparedHourlyDataset
+
+        open_calls = []
+        real_load = np.load
+
+        def counting_load(path, *args, **kwargs):
+            open_calls.append(path)
+            return real_load(path, *args, **kwargs)
+
+        with unittest.mock.patch("src.training.dataset.np.load", side_effect=counting_load):
+            dataset = PreparedHourlyDataset(
+                self.REGION_NAME, "train", prepared_root=self.prepared_root, preload=True,
+            )
+        self.assertEqual(len(open_calls), 2, "preload should open each of the 2 synthetic train days exactly once")
+
+        # Scattered, non-day-grouped access must not trigger any further loads.
+        with unittest.mock.patch("src.training.dataset.np.load", side_effect=counting_load):
+            for index in (23, 0, 47, 24, 1):
+                dataset[index]
+        self.assertEqual(len(open_calls), 2, "preloaded access must never reopen the NPZ")
+
+
+class TrainCommonTest(unittest.TestCase):
+    def test_total_precip_input_mm_sums_cp_and_lsp_channels_in_order(self):
+        from src.data_preprocessing.prepare_hourly_dataset import ChannelMoments
+        from src.training.common import denormalize_to_mm, total_precip_input_mm
+
+        cp_moments = ChannelMoments(mean=0.1, std=0.5, count=100)
+        lsp_moments = ChannelMoments(mean=-0.2, std=0.8, count=100)
+        inputs_norm = torch.tensor([[[[1.0]], [[-0.5]]]])  # (1, 2, 1, 1): channel 0 = cp, channel 1 = lsp
+
+        result = total_precip_input_mm(inputs_norm, cp_moments, lsp_moments)
+        expected = denormalize_to_mm(inputs_norm[:, 0:1], cp_moments) + denormalize_to_mm(inputs_norm[:, 1:2], lsp_moments)
+        torch.testing.assert_close(result, expected)
+
+        # Swapping which moments pair with which channel must change the
+        # result -- locks in that cp is channel 0 and lsp is channel 1.
+        swapped = total_precip_input_mm(inputs_norm, lsp_moments, cp_moments)
+        self.assertFalse(torch.allclose(result, swapped))
+
+    def test_input_moments_reads_cp_and_lsp_from_pooled_stats(self):
+        from src.training.common import input_moments
+
+        stats = {
+            "pooled": {
+                "cp": {"mean": 1.0, "std": 2.0, "count": 10},
+                "lsp": {"mean": 3.0, "std": 4.0, "count": 10},
+                "target": {"mean": 0.0, "std": 1.0, "count": 10},
+            },
+        }
+        cp_moments, lsp_moments = input_moments(stats)
+        self.assertEqual((cp_moments.mean, cp_moments.std), (1.0, 2.0))
+        self.assertEqual((lsp_moments.mean, lsp_moments.std), (3.0, 4.0))
+
+    def test_pooled_metrics_clips_one_pathological_residual_instead_of_exploding_r2(self):
+        """Regression lock: a real validation pass once produced r2=-4e18
+        because one pixel's prediction blew up numerically. A handful of
+        sane residuals plus one absurd one must stay in a readable range."""
+        from src.training.common import PooledMetrics
+
+        obs = torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
+        pred_sane = obs + 0.1
+        pred_sane[0] = 1e12  # one pathological prediction
+        mask = torch.ones_like(obs, dtype=torch.bool)
+
+        clipped = PooledMetrics(max_abs_residual=500.0)
+        clipped.update(pred_sane.unsqueeze(0), obs.unsqueeze(0), mask.unsqueeze(0))
+        clipped_r2 = clipped.compute()["r2"]
+
+        unclipped = PooledMetrics(max_abs_residual=None)
+        unclipped.update(pred_sane.unsqueeze(0), obs.unsqueeze(0), mask.unsqueeze(0))
+        unclipped_r2 = unclipped.compute()["r2"]
+
+        self.assertGreater(clipped.compute()["clipped_count"], 0)
+        # unclipped blows up to ~-1e22 scale from the 1e12 prediction; clipped
+        # is bounded by max_abs_residual**2, many orders of magnitude tamer.
+        self.assertLess(unclipped_r2, -1e15)
+        self.assertGreater(clipped_r2, unclipped_r2 / 1e6)
+
+    def test_pooled_metrics_leaves_ordinary_residuals_untouched(self):
+        from src.training.common import PooledMetrics
+
+        unclipped = PooledMetrics(max_abs_residual=None)
+        clipped = PooledMetrics(max_abs_residual=500.0)
+        obs = torch.tensor([1.0, 2.0, 3.0, 4.0])
+        pred = torch.tensor([1.1, 1.8, 3.3, 3.9])
+        mask = torch.ones_like(obs, dtype=torch.bool)
+        unclipped.update(pred.unsqueeze(0), obs.unsqueeze(0), mask.unsqueeze(0))
+        clipped.update(pred.unsqueeze(0), obs.unsqueeze(0), mask.unsqueeze(0))
+
+        self.assertEqual(clipped.compute()["clipped_count"], 0)
+        self.assertAlmostEqual(unclipped.compute()["r2"], clipped.compute()["r2"], places=10)
+
+    def test_masked_mean_matches_manual_average_when_mask_lacks_channel_dim(self):
+        """Regression lock: found 2026-10-19 live in train_baseline.py's and
+        diffusion stage-1's training loss. ``values`` (B,1,H,W) against
+        ``mask`` (B,H,W) must reduce to the per-sample masked average, not
+        silently broadcast into a (B,B,H,W) cross-batch outer product."""
+        from src.training.common import masked_mean
+
+        torch.manual_seed(0)
+        batch, h, w = 3, 4, 4
+        values = torch.rand(batch, 1, h, w)
+        mask = torch.rand(batch, h, w) > 0.5
+        self.assertTrue(mask.any(), "need at least one valid pixel for a meaningful average")
+
+        manual = values.squeeze(1)[mask].mean()
+        result = masked_mean(values, mask)
+        torch.testing.assert_close(result, manual)
+
+        # The old buggy behaviour scaled the result by ~batch_size -- a
+        # tripwire in case the fix regresses back to that shape.
+        self.assertLess((result - manual).abs().item(), 1e-5)
+
+    def test_masked_mean_still_works_when_mask_already_has_channel_dim(self):
+        from src.training.common import masked_mean
+
+        torch.manual_seed(1)
+        batch, h, w = 2, 4, 4
+        values = torch.rand(batch, 1, h, w)
+        mask = (torch.rand(batch, h, w) > 0.3).unsqueeze(1)
+
+        manual = values[mask].mean()
+        result = masked_mean(values, mask)
+        torch.testing.assert_close(result, manual)
+
+
+class DeterministicResNetResidualTest(unittest.TestCase):
+    def test_total_precip_input_activates_residual_branch(self):
+        from src.models.deterministic_resnet import DeterministicResNet, ResNetConfig
+
+        torch.manual_seed(0)
+        model = DeterministicResNet(ResNetConfig(base_width=4, depth=1))
+        inputs = torch.randn(1, 2, 8, 8)
+        invariants = torch.randn(1, 2, 8, 8)
+        total_precip_input = torch.rand(1, 1, 8, 8) * 5.0
+
+        without = model(inputs, invariants)
+        with_residual = model(inputs, invariants, total_precip_input)
+        self.assertFalse(torch.allclose(without, with_residual), "total_precip_input must reach the output")
+
+    def test_residual_preactivation_bound_keeps_softplus_gradient_alive(self):
+        """Regression lock for the dead-gradient bug measured on a real
+        checkpoint (run4, epoch 11): plain L1 against mostly-zero targets
+        drove the unbounded pre-activation to mean -30, where softplus'
+        gradient (sigmoid(preact)) underflows to an exact 0.0 and freezes the
+        whole trunk. -30 is reproduced here via an extreme head bias (the
+        organic route, through thousands of Adam steps, isn't practical in a
+        unit test); the bound must keep the gradient representable at it."""
+        from src.models.deterministic_resnet import DeterministicResNet, ResNetConfig
+
+        torch.manual_seed(0)
+        model = DeterministicResNet(ResNetConfig(base_width=4, depth=1))
+        with torch.no_grad():
+            model.head.bias.fill_(-30.0)
+        inputs = torch.randn(1, 2, 8, 8)
+        invariants = torch.randn(1, 2, 8, 8)
+        total_precip_input = torch.zeros(1, 1, 8, 8)  # base = log1p(0) = 0 -- worst case
+
+        prediction = model(inputs, invariants, total_precip_input)
+        self.assertGreater(prediction.max().item(), 0.0, "bound must prevent an exact-zero collapse")
+
+        loss = prediction.sum()
+        loss.backward()
+        head_grad_norm = model.stem.weight.grad.norm().item()
+        self.assertGreater(head_grad_norm, 0.0, "gradient to the trunk must not underflow to exact zero")
+
 
 class TrainBaselineTest(_WithPreparedSyntheticRegion):
     def test_one_epoch_runs_and_checkpoints(self):
-        from src.training.train_baseline import BaselineTrainingConfig, train
+        from src.models.deterministic_resnet import DeterministicResNet, ResNetConfig
+        from src.training.common import input_moments, load_norm_stats, to_device, total_precip_input_mm
+        from src.training.dataset import PreparedHourlyDataset
+        from src.training.train_baseline import BaselineTrainingConfig, _forward, train
 
         with tempfile.TemporaryDirectory() as out:
             config = BaselineTrainingConfig(
@@ -154,6 +374,67 @@ class TrainBaselineTest(_WithPreparedSyntheticRegion):
             self.assertTrue((run_dir / "history.json").exists())
             checkpoint = torch.load(run_dir / "last.pt", weights_only=False)
             self.assertIn("model_state", checkpoint)
+
+            # Regression lock for the residual-over-input wiring bug: a
+            # trained checkpoint's prediction must not be a flat constant
+            # (the exact symptom that delated the Softplus-saturation collapse).
+            model = DeterministicResNet(ResNetConfig(**checkpoint["model_config"]))
+            model.load_state_dict(checkpoint["model_state"])
+            model.eval()
+            stats = load_norm_stats(self.prepared_root)
+            cp_moments, lsp_moments = input_moments(stats)
+            val_dataset = PreparedHourlyDataset(self.REGION_NAME, "val", prepared_root=self.prepared_root)
+            batch = to_device(
+                {k: v.unsqueeze(0) if torch.is_tensor(v) else v for k, v in val_dataset[0].items()},
+                torch.device("cpu"),
+            )
+            total_precip_input = total_precip_input_mm(batch["inputs"], cp_moments, lsp_moments)
+            with torch.no_grad():
+                prediction = _forward(model, batch["inputs"], batch["invariants"], total_precip_input)
+            self.assertGreater(prediction.std().item(), 0.0, "prediction collapsed to a constant")
+
+    def test_rain_weight_raises_loss_contribution_of_wet_pixels_only(self):
+        from src.training.train_baseline import _erm_loss
+
+        # 1 wet pixel (target=1.0 > threshold), 3 dry pixels (target=0.0).
+        # Same per-pixel error (0.5) everywhere, so unweighted loss is 0.5
+        # regardless of which pixels are wet; weighting must change that.
+        prediction = torch.tensor([[[[0.5, 0.5, 0.5, 0.5]]]])
+        target = torch.tensor([[[[1.0, 0.0, 0.0, 0.0]]]])
+        mask = torch.ones(1, 4, dtype=torch.bool)
+
+        unweighted = _erm_loss(prediction, target, mask, rain_weight=1.0)
+        self.assertAlmostEqual(unweighted.item(), 0.5, places=6)
+
+        weighted = _erm_loss(prediction, target, mask, rain_weight=4.0, wet_threshold_mm=0.1)
+        # weights [4,1,1,1] on an identical 0.5 error everywhere still average
+        # to 0.5 -- a uniform error is invariant to reweighting.
+        self.assertAlmostEqual(weighted.item(), 0.5, places=6)
+
+        dry_wrong = torch.tensor([[[[1.0, 0.5, 0.5, 0.5]]]])  # wet pixel now exact
+        dry_only_unweighted = _erm_loss(dry_wrong, target, mask, rain_weight=1.0)
+        dry_only_weighted = _erm_loss(dry_wrong, target, mask, rain_weight=4.0, wet_threshold_mm=0.1)
+        # Error now comes only from dry pixels; the (zero-error) wet pixel's
+        # extra weight mass dilutes their relative contribution.
+        self.assertLess(dry_only_weighted.item(), dry_only_unweighted.item())
+
+        wet_wrong = torch.tensor([[[[0.0, 0.0, 0.0, 0.0]]]])  # only wet pixel is wrong now
+        wet_only_unweighted = _erm_loss(wet_wrong, target, mask, rain_weight=1.0)
+        wet_only_weighted = _erm_loss(wet_wrong, target, mask, rain_weight=4.0, wet_threshold_mm=0.1)
+        # Wet pixel is the only error source -> up-weighting it must raise
+        # the loss relative to the unweighted case.
+        self.assertGreater(wet_only_weighted.item(), wet_only_unweighted.item())
+
+    def test_one_epoch_runs_with_num_workers_greater_than_zero(self):
+        from src.training.train_baseline import BaselineTrainingConfig, train
+
+        with tempfile.TemporaryDirectory() as out:
+            config = BaselineTrainingConfig(
+                region=self.REGION_NAME, epochs=1, batch_size=8, base_width=8, depth=2,
+                device="cpu", patience=1, num_workers=2, preload_dataset=True,
+            )
+            run_dir = train(config, prepared_root=self.prepared_root, output_root=Path(out))
+            self.assertTrue((run_dir / "last.pt").exists())
 
     def test_eta_learning_runs_when_enabled(self):
         from src.training.train_baseline import BaselineTrainingConfig, train
@@ -210,3 +491,137 @@ class TrainDiffusionTest(_WithPreparedSyntheticRegion):
             self.assertTrue((stage2_run_dir / "last.pt").exists())
             checkpoint = torch.load(stage2_run_dir / "last.pt", weights_only=False)
             self.assertIn("denoiser_state", checkpoint)
+
+    def test_stage2_runs_with_nonzero_s_churn(self):
+        from src.training.train_diffusion import (
+            DiffusionStageTrainingConfig,
+            RegressionStageTrainingConfig,
+            train_diffusion_stage,
+            train_regression_stage,
+        )
+
+        with tempfile.TemporaryDirectory() as out:
+            stage1_config = RegressionStageTrainingConfig(
+                region=self.REGION_NAME, epochs=1, batch_size=8, base_width=8, device="cpu", patience=1,
+            )
+            stage1_checkpoint = train_regression_stage(
+                stage1_config, prepared_root=self.prepared_root, output_root=Path(out),
+            ) / "best.pt"
+
+            stage2_config = DiffusionStageTrainingConfig(
+                region=self.REGION_NAME, stage1_checkpoint=str(stage1_checkpoint),
+                epochs=1, batch_size=8, base_width=8, device="cpu", patience=1,
+                sampler_steps_for_validation=3, s_churn=7.0,
+            )
+            stage2_run_dir = train_diffusion_stage(stage2_config, prepared_root=self.prepared_root, output_root=Path(out))
+            self.assertTrue((stage2_run_dir / "last.pt").exists())
+
+    def test_stage2_custom_sigma_data_reaches_the_denoiser(self):
+        """D2 (measured on real checkpoints): sigma_data=0.5 is Karras'
+        generic default, not this dataset's measured residual scale. Locks
+        in that a custom value set at the training-config level actually
+        reaches the EDMPrecond wrapper the denoiser trains with, not just a
+        local variable that gets silently dropped."""
+        import json
+
+        from src.training.train_diffusion import (
+            DiffusionStageTrainingConfig,
+            RegressionStageTrainingConfig,
+            train_diffusion_stage,
+            train_regression_stage,
+        )
+
+        with tempfile.TemporaryDirectory() as out:
+            stage1_config = RegressionStageTrainingConfig(
+                region=self.REGION_NAME, epochs=1, batch_size=8, base_width=8, device="cpu", patience=1,
+            )
+            stage1_checkpoint = train_regression_stage(
+                stage1_config, prepared_root=self.prepared_root, output_root=Path(out),
+            ) / "best.pt"
+
+            stage2_config = DiffusionStageTrainingConfig(
+                region=self.REGION_NAME, stage1_checkpoint=str(stage1_checkpoint),
+                epochs=1, batch_size=8, base_width=8, device="cpu", patience=1,
+                sampler_steps_for_validation=3, sigma_data=0.8, p_mean=-0.22, p_std=0.9,
+            )
+            stage2_run_dir = train_diffusion_stage(stage2_config, prepared_root=self.prepared_root, output_root=Path(out))
+            run_metadata = json.loads((stage2_run_dir / "run.json").read_text())
+            self.assertEqual(run_metadata["config"]["sigma_data"], 0.8)
+            self.assertEqual(run_metadata["config"]["p_mean"], -0.22)
+            self.assertEqual(run_metadata["config"]["p_std"], 0.9)
+
+    def test_stage2_same_seed_reproduces_identical_train_loss(self):
+        import json
+
+        from src.training.train_diffusion import (
+            DiffusionStageTrainingConfig,
+            RegressionStageTrainingConfig,
+            train_diffusion_stage,
+            train_regression_stage,
+        )
+
+        with tempfile.TemporaryDirectory() as out:
+            stage1_config = RegressionStageTrainingConfig(
+                region=self.REGION_NAME, epochs=1, batch_size=8, base_width=8, device="cpu", patience=1,
+            )
+            stage1_checkpoint = train_regression_stage(
+                stage1_config, prepared_root=self.prepared_root, output_root=Path(out),
+            ) / "best.pt"
+
+            def run_once(run_name: str) -> list[float]:
+                config = DiffusionStageTrainingConfig(
+                    region=self.REGION_NAME, stage1_checkpoint=str(stage1_checkpoint), run_name=run_name,
+                    epochs=1, batch_size=8, base_width=8, device="cpu", patience=1,
+                    sampler_steps_for_validation=3, seed=123,
+                )
+                run_dir = train_diffusion_stage(config, prepared_root=self.prepared_root, output_root=Path(out))
+                history = json.loads((run_dir / "history.json").read_text())
+                return [row["train_loss"] for row in history]
+
+            self.assertEqual(run_once("rng_a"), run_once("rng_b"))
+
+    def test_stage2_validation_noise_is_identical_across_repeated_calls(self):
+        """Regression lock, found 2026-10-19 while investigating why val_r2
+        kept swinging wildly epoch to epoch even after the sigma_data/
+        s_churn fixes: ``validate_diffusion`` was called with the same
+        ``rng`` object training kept advancing, so every epoch's Heun
+        sampling drew different noise -- part of the swing was sampling
+        luck, not the denoiser changing. Calling it twice with a generator
+        re-seeded to the same value (what ``train_diffusion_stage`` now
+        does every epoch) on an unchanged denoiser must give bit-identical
+        metrics."""
+        from src.models.diffusion_residual import EDMConfig, HeunSamplerConfig
+        from src.training.common import load_norm_stats, target_moments
+        from src.training.dataset import PreparedHourlyDataset
+        from src.training.train_diffusion import (
+            RegressionStageTrainingConfig,
+            _build_denoiser,
+            _load_stage1,
+            train_regression_stage,
+            validate_diffusion,
+        )
+        from torch.utils.data import DataLoader
+
+        with tempfile.TemporaryDirectory() as out:
+            stage1_config = RegressionStageTrainingConfig(
+                region=self.REGION_NAME, epochs=1, batch_size=8, base_width=8, device="cpu", patience=1,
+            )
+            stage1_checkpoint = train_regression_stage(
+                stage1_config, prepared_root=self.prepared_root, output_root=Path(out),
+            ) / "best.pt"
+            stage1 = _load_stage1(str(stage1_checkpoint), torch.device("cpu"))
+
+            denoiser, _ = _build_denoiser(8, torch.device("cpu"), EDMConfig())
+            sampler_config = HeunSamplerConfig(num_steps=3)
+            moments = target_moments(load_norm_stats(self.prepared_root))
+            val_dataset = PreparedHourlyDataset(self.REGION_NAME, "val", prepared_root=self.prepared_root)
+            val_loader = DataLoader(val_dataset, batch_size=8, shuffle=False)
+
+            def run_validation() -> dict[str, float]:
+                generator = torch.Generator(device="cpu")
+                generator.manual_seed(42)
+                return validate_diffusion(
+                    denoiser, stage1, val_loader, torch.device("cpu"), moments, sampler_config, generator=generator,
+                )
+
+            self.assertEqual(run_validation(), run_validation())

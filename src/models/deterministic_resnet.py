@@ -83,5 +83,24 @@ class DeterministicResNet(nn.Module):
         out = self.head(x)
         if self.config.predict_residual_over_input and total_precip_input is not None:
             base = torch.log1p(total_precip_input.clamp_min(0.0))
+            # Softly bound the raw residual before it meets softplus -- a hard
+            # clamp was tried first and rejected: clamp's gradient is exactly
+            # zero outside its range, so as soon as training pushes `out` past
+            # the boundary it freezes the trunk just as dead as the original
+            # bug, only shallower. `tanh` instead has a gradient that only
+            # *asymptotically* vanishes, so it stays representable over a much
+            # wider range. Measured on a real checkpoint (run4, epoch 11): with
+            # the target mostly zero rain, plain L1 drives the unbounded
+            # pre-activation to mean -30 within the very first epoch --
+            # softplus' gradient (sigmoid(x)) underflows to an exact 0.0 that
+            # deep, freezing every weight update for the rest of training
+            # (predictions stay a literal 0.0 everywhere, train/val loss
+            # unchanged to 4 decimals for 10+ epochs straight). With this
+            # bound, the same raw -30 output still carries a representable
+            # gradient (~5e-7, measured) instead of an exact zero. Scale 10.0
+            # matches log1p of this dataset's clip ceiling (~130mm/hr, see
+            # norm_stats era5_clip_range) at ~4.9, so it covers a full-scale
+            # correction in either direction before saturating.
+            out = 10.0 * torch.tanh(out / 10.0)
             return torch.expm1(F.softplus(base + out)).clamp_min(0.0)
         return F.softplus(out)

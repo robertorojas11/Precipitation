@@ -63,7 +63,7 @@ from src.training.common import (
     to_device,
     write_run_metadata,
 )
-from src.training.dataset import PreparedHourlyDataset
+from src.training.dataset import DayGroupedSampler, PreparedHourlyDataset
 from src.training.eta_integration import EtaConfig, EtaRegularizer, build_eta_pools
 from src.utils.logging import configure_logging
 
@@ -86,6 +86,8 @@ class RegressionStageTrainingConfig:
     num_workers: int = 0
     device: str = "cuda"
     run_name: str | None = None
+    preload_dataset: bool = True
+    use_amp: bool = True
     eta_lambda: float = 0.0
     eta_tau: float = 0.95
     eta_n_q: int = 100
@@ -108,7 +110,26 @@ class DiffusionStageTrainingConfig:
     num_workers: int = 0
     device: str = "cuda"
     run_name: str | None = None
+    preload_dataset: bool = True
+    # No `use_amp` here, deliberately: sigma ranges from 0.002 to 80 (EDM's
+    # Karras schedule) and the preconditioning weight (sigma^2+sigma_data^2)
+    # / (sigma*sigma_data)^2 swings over many orders of magnitude across
+    # that range -- autocast's bf16 mantissa is too coarse to risk mixing in
+    # here before D2 (sigma_data calibration) has even run. Stage 1's own
+    # RegressionStageTrainingConfig keeps `use_amp` since its loss has no
+    # such dynamic range.
     sampler_steps_for_validation: int = 18
+    s_churn: float = 0.0
+    # Karras et al.'s generic image defaults, kept as the default here too --
+    # D2 measured this dataset's actual clean_residual std (target_norm minus
+    # stage1_mean, both normalized) at ~0.78 (pacifico) / ~0.90 (atlantico),
+    # not wildly off from 0.5 but a real ~1.6-1.8x gap, not a rounding error.
+    # Override at the call site with the measured value for the region being
+    # trained; p_mean = log(sigma_data) re-centers the training noise
+    # schedule on the *measured* signal scale instead of the generic one.
+    sigma_data: float = 0.5
+    p_mean: float = -1.2
+    p_std: float = 1.2
 
 
 def _regression_config(base_width: int) -> RegressionStageConfig:
@@ -122,15 +143,16 @@ def _stage1_forward(model: RegressionUNet, inputs: torch.Tensor, invariants: tor
     return model(torch.cat([inputs, invariants], dim=1))
 
 
-def validate_regression(model, loader, device, moments) -> dict[str, float]:
+def validate_regression(model, loader, device, moments, *, use_amp: bool = False) -> dict[str, float]:
     model.eval()
     metrics = PooledMetrics()
     with torch.no_grad():
         for batch in loader:
             batch = to_device(batch, device)
-            prediction_norm = _stage1_forward(model, batch["inputs"], batch["invariants"])
+            with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_amp):
+                prediction_norm = _stage1_forward(model, batch["inputs"], batch["invariants"])
             metrics.update(
-                denormalize_to_mm(prediction_norm, moments), denormalize_to_mm(batch["target"], moments),
+                denormalize_to_mm(prediction_norm.float(), moments), denormalize_to_mm(batch["target"], moments),
                 loss_mask(batch),
             )
     return metrics.compute()
@@ -144,14 +166,23 @@ def train_regression_stage(
     stats = load_norm_stats(prepared_root)
     moments = target_moments(stats)
 
-    train_dataset = PreparedHourlyDataset(config.region, "train", prepared_root=prepared_root)
-    val_dataset = PreparedHourlyDataset(config.region, "val", prepared_root=prepared_root)
-    data_generator = torch.Generator().manual_seed(config.seed)
-    train_loader = DataLoader(
-        train_dataset, batch_size=config.batch_size, shuffle=True, generator=data_generator,
-        num_workers=config.num_workers,
+    train_dataset = PreparedHourlyDataset(
+        config.region, "train", prepared_root=prepared_root, preload=config.preload_dataset,
     )
-    val_loader = DataLoader(val_dataset, batch_size=config.batch_size, shuffle=False, num_workers=config.num_workers)
+    val_dataset = PreparedHourlyDataset(
+        config.region, "val", prepared_root=prepared_root, preload=config.preload_dataset,
+    )
+    train_sampler = DayGroupedSampler(train_dataset, shuffle=True, seed=config.seed)
+    pin_memory = device.type == "cuda"
+    persistent_workers = config.num_workers > 0
+    train_loader = DataLoader(
+        train_dataset, batch_size=config.batch_size, sampler=train_sampler, num_workers=config.num_workers,
+        pin_memory=pin_memory, persistent_workers=persistent_workers,
+    )
+    val_loader = DataLoader(
+        val_dataset, batch_size=config.batch_size, shuffle=False, num_workers=config.num_workers,
+        pin_memory=pin_memory, persistent_workers=persistent_workers,
+    )
 
     model_config = _regression_config(config.base_width)
     model = RegressionUNet(model_config).to(device)
@@ -178,6 +209,7 @@ def train_regression_stage(
     best_r2 = -float("inf")
     epochs_without_improvement = 0
     for epoch in range(1, config.epochs + 1):
+        train_sampler.set_epoch(epoch)
         model.train()
         epoch_loss = 0.0
         batches = 0
@@ -189,9 +221,10 @@ def train_regression_stage(
                 return denormalize_to_mm(_stage1_forward(model, inp, inv), moments)
 
             eta.maybe_refresh_tail_index(forward_fn)
-            prediction_norm = _stage1_forward(model, batch["inputs"], batch["invariants"])
-            mask = loss_mask(batch)
-            loss = masked_mean((prediction_norm - batch["target"]) ** 2, mask)
+            with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=config.use_amp):
+                prediction_norm = _stage1_forward(model, batch["inputs"], batch["invariants"])
+                mask = loss_mask(batch)
+                loss = masked_mean((prediction_norm - batch["target"]) ** 2, mask)
             eta_term = eta.term(forward_fn)
             if eta_term is not None:
                 loss = loss + eta_config.lambda_ * eta_term
@@ -202,10 +235,11 @@ def train_regression_stage(
             epoch_loss += loss.item()
             batches += 1
 
-        validation = validate_regression(model, val_loader, device, moments)
+        validation = validate_regression(model, val_loader, device, moments, use_amp=config.use_amp)
         row = {"epoch": epoch, "train_loss": epoch_loss / max(batches, 1), **{f"val_{k}": v for k, v in validation.items()}}
         append_history(run_dir, row)
-        logger.info("diffusion-stage1 epoch=%d train_loss=%.4f val_r2=%.4f", epoch, row["train_loss"], validation["r2"])
+        logger.info("diffusion-stage1 epoch=%d train_loss=%.4f val_r2=%.4f val_log_mae=%.4f val_clipped=%d",
+                    epoch, row["train_loss"], validation["r2"], validation["log_mae"], validation["clipped_count"])
 
         checkpoint = {"model_state": model.state_dict(), "model_config": asdict(model_config), "epoch": epoch}
         torch.save(checkpoint, run_dir / "last.pt")
@@ -262,15 +296,19 @@ def _denoiser_raw_network_config(base_width: int) -> RegressionStageConfig:
     )
 
 
-def _build_denoiser(base_width: int, device: torch.device) -> tuple[EDMPrecond, RegressionStageConfig]:
+def _build_denoiser(
+    base_width: int, device: torch.device, edm_config: EDMConfig | None = None,
+) -> tuple[EDMPrecond, RegressionStageConfig]:
     from src.models.diffusion_residual import SimpleNoiseConditionedUNet
 
     raw_config = _denoiser_raw_network_config(base_width)
     raw = SimpleNoiseConditionedUNet(raw_config)
-    return EDMPrecond(raw, EDMConfig()).to(device), raw_config
+    return EDMPrecond(raw, edm_config or EDMConfig()).to(device), raw_config
 
 
-def validate_diffusion(denoiser, stage1, loader, device, moments, sampler_config) -> dict[str, float]:
+def validate_diffusion(
+    denoiser, stage1, loader, device, moments, sampler_config, *, generator: torch.Generator | None = None,
+) -> dict[str, float]:
     denoiser.eval()
     metrics = PooledMetrics()
     with torch.no_grad():
@@ -278,7 +316,9 @@ def validate_diffusion(denoiser, stage1, loader, device, moments, sampler_config
             batch = to_device(batch, device)
             stage1_mean = _stage1_forward(stage1, batch["inputs"], batch["invariants"])
             conditioning = torch.cat([batch["inputs"], batch["invariants"], stage1_mean], dim=1)
-            residual_sample = heun_sample(denoiser, conditioning, stage1_mean.shape, sampler_config)
+            residual_sample = heun_sample(
+                denoiser, conditioning, stage1_mean.shape, sampler_config, generator=generator,
+            )
             prediction_norm = stage1_mean + residual_sample
             metrics.update(
                 denormalize_to_mm(prediction_norm, moments), denormalize_to_mm(batch["target"], moments),
@@ -295,19 +335,39 @@ def train_diffusion_stage(
     stats = load_norm_stats(prepared_root)
     moments = target_moments(stats)
 
-    train_dataset = PreparedHourlyDataset(config.region, "train", prepared_root=prepared_root)
-    val_dataset = PreparedHourlyDataset(config.region, "val", prepared_root=prepared_root)
-    data_generator = torch.Generator().manual_seed(config.seed)
-    train_loader = DataLoader(
-        train_dataset, batch_size=config.batch_size, shuffle=True, generator=data_generator,
-        num_workers=config.num_workers,
+    train_dataset = PreparedHourlyDataset(
+        config.region, "train", prepared_root=prepared_root, preload=config.preload_dataset,
     )
-    val_loader = DataLoader(val_dataset, batch_size=config.batch_size, shuffle=False, num_workers=config.num_workers)
+    val_dataset = PreparedHourlyDataset(
+        config.region, "val", prepared_root=prepared_root, preload=config.preload_dataset,
+    )
+    train_sampler = DayGroupedSampler(train_dataset, shuffle=True, seed=config.seed)
+    pin_memory = device.type == "cuda"
+    persistent_workers = config.num_workers > 0
+    train_loader = DataLoader(
+        train_dataset, batch_size=config.batch_size, sampler=train_sampler, num_workers=config.num_workers,
+        pin_memory=pin_memory, persistent_workers=persistent_workers,
+    )
+    val_loader = DataLoader(
+        val_dataset, batch_size=config.batch_size, shuffle=False, num_workers=config.num_workers,
+        pin_memory=pin_memory, persistent_workers=persistent_workers,
+    )
 
     stage1 = _load_stage1(config.stage1_checkpoint, device)
-    denoiser, denoiser_config = _build_denoiser(config.base_width, device)
+    edm_config = EDMConfig(sigma_data=config.sigma_data, p_mean=config.p_mean, p_std=config.p_std)
+    denoiser, denoiser_config = _build_denoiser(config.base_width, device, edm_config)
     optimizer = torch.optim.AdamW(denoiser.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
-    sampler_config = HeunSamplerConfig(num_steps=config.sampler_steps_for_validation)
+    sampler_config = HeunSamplerConfig(num_steps=config.sampler_steps_for_validation, s_churn=config.s_churn)
+    rng = torch.Generator(device=device.type).manual_seed(config.seed)
+    # Separate generator for validation, re-seeded to the same value before
+    # every epoch's call (below) -- found 2026-10-19 while investigating the
+    # EDM recalibration results: reusing `rng` (whose state keeps advancing
+    # through training) gives every epoch's Heun sampling a *different*
+    # noise draw, so val_r2 swings (observed: -26 to -0.07 across consecutive
+    # epochs on stage2_run4/run5) partly reflect sampling luck, not the
+    # denoiser's own quality -- which also makes patience-based early
+    # stopping and best-checkpoint selection noisier than they need to be.
+    val_rng = torch.Generator(device=device.type)
 
     run_dir = init_run_dir("diffusion_stage2_residual", config.region, run_name=config.run_name, output_root=output_root)
     write_run_metadata(run_dir, config, stats=stats, extra={"stage1_checkpoint": config.stage1_checkpoint})
@@ -315,6 +375,7 @@ def train_diffusion_stage(
     best_r2 = -float("inf")
     epochs_without_improvement = 0
     for epoch in range(1, config.epochs + 1):
+        train_sampler.set_epoch(epoch)
         denoiser.train()
         epoch_loss = 0.0
         batches = 0
@@ -326,17 +387,19 @@ def train_diffusion_stage(
             conditioning = torch.cat([batch["inputs"], batch["invariants"], stage1_mean], dim=1)
 
             optimizer.zero_grad(set_to_none=True)
-            loss = masked_edm_loss(denoiser, clean_residual, conditioning, loss_mask(batch))
+            loss = masked_edm_loss(denoiser, clean_residual, conditioning, loss_mask(batch), generator=rng)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(denoiser.parameters(), 1.0)
             optimizer.step()
             epoch_loss += loss.item()
             batches += 1
 
-        validation = validate_diffusion(denoiser, stage1, val_loader, device, moments, sampler_config)
+        val_rng.manual_seed(config.seed)
+        validation = validate_diffusion(denoiser, stage1, val_loader, device, moments, sampler_config, generator=val_rng)
         row = {"epoch": epoch, "train_loss": epoch_loss / max(batches, 1), **{f"val_{k}": v for k, v in validation.items()}}
         append_history(run_dir, row)
-        logger.info("diffusion-stage2 epoch=%d train_loss=%.4f val_r2=%.4f", epoch, row["train_loss"], validation["r2"])
+        logger.info("diffusion-stage2 epoch=%d train_loss=%.4f val_r2=%.4f val_log_mae=%.4f val_clipped=%d",
+                    epoch, row["train_loss"], validation["r2"], validation["log_mae"], validation["clipped_count"])
 
         checkpoint = {
             "denoiser_state": denoiser.state_dict(), "denoiser_config": asdict(denoiser_config), "epoch": epoch,
@@ -364,14 +427,22 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--run-name")
+    parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument("--no-preload", dest="preload_dataset", action="store_false", default=True)
+    parser.add_argument("--no-amp", dest="use_amp", action="store_false", default=True)
     parser.add_argument("--eta-lambda", type=float, default=0.0)
     parser.add_argument("--stage1-checkpoint")
+    parser.add_argument("--s-churn", type=float, default=0.0)
+    parser.add_argument("--sigma-data", type=float, default=0.5)
+    parser.add_argument("--p-mean", type=float, default=-1.2)
+    parser.add_argument("--p-std", type=float, default=1.2)
     args = parser.parse_args()
 
     if args.stage == "regression":
         config = RegressionStageTrainingConfig(
             region=args.region, epochs=args.epochs, batch_size=args.batch_size,
-            seed=args.seed, device=args.device, run_name=args.run_name, eta_lambda=args.eta_lambda,
+            seed=args.seed, device=args.device, run_name=args.run_name, num_workers=args.num_workers,
+            preload_dataset=args.preload_dataset, use_amp=args.use_amp, eta_lambda=args.eta_lambda,
         )
         print(train_regression_stage(config))
     else:
@@ -380,6 +451,8 @@ def main() -> None:
         config = DiffusionStageTrainingConfig(
             region=args.region, stage1_checkpoint=args.stage1_checkpoint, epochs=args.epochs,
             batch_size=args.batch_size, seed=args.seed, device=args.device, run_name=args.run_name,
+            num_workers=args.num_workers, preload_dataset=args.preload_dataset, s_churn=args.s_churn,
+            sigma_data=args.sigma_data, p_mean=args.p_mean, p_std=args.p_std,
         )
         print(train_diffusion_stage(config))
 

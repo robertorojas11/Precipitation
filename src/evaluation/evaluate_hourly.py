@@ -131,7 +131,7 @@ def run_evaluation(
     stats = load_norm_stats(prepared_root)
     moments = target_moments(stats)
     dataset = PreparedHourlyDataset(region, split, prepared_root=prepared_root)
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, pin_memory=device_t.type == "cuda")
 
     total = len(dataset)
     spatial_stride = max(1, total // max(max_spatial_frames, 1))
@@ -435,6 +435,11 @@ def main() -> None:
     parser.add_argument("--stage2-checkpoint")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--output")
+    parser.add_argument(
+        "--s-churn", type=float, default=0.0,
+        help="Heun sampler churn for --model diffusion (Avila 2026 S6.1: ~7 at 18 steps "
+        "improves peak recovery with no retraining). Ignored for other models.",
+    )
     args = parser.parse_args()
 
     if args.model == "baseline":
@@ -444,6 +449,7 @@ def main() -> None:
     elif args.model == "diffusion":
         result = evaluate_diffusion(
             args.region, args.split, args.stage1_checkpoint, args.stage2_checkpoint, device=args.device,
+            sampler_config=HeunSamplerConfig(s_churn=args.s_churn),
         )
     else:
         result = evaluate_bilinear_baseline(args.region, args.split)
